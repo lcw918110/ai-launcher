@@ -5,6 +5,9 @@ import Foundation
 
 let configPath = NSHomeDirectory() + "/.config/ai-launcher/config.json"
 
+// 启动脚本 PATH 前缀的缺省值（可在 config.json 用 pathPrepend 覆盖；空数组表示不注入）
+let defaultPathPrepend: [String] = ["~/.bun/bin", "/opt/homebrew/bin", "/usr/local/bin"]
+
 struct ToolConfig {
     let name: String   // 菜单显示名
     let cmd: String    // 实际执行的命令
@@ -40,8 +43,35 @@ struct ConnectionInfo {
     var port: String
 }
 
+// 去掉 IPv6 方括号：[::1] -> ::1（ssh 的 host 参数不能带方括号，rsync/scp 的规格要带）
+// 兼容 user@[::1] 这种带用户名的写法，只剥主机部分
+func stripBrackets(_ host: String) -> String {
+    if let at = host.lastIndex(of: "@") {
+        let user = String(host[...at])
+        return user + stripBrackets(String(host[host.index(after: at)...]))
+    }
+    if host.hasPrefix("[") && host.hasSuffix("]") {
+        return String(host.dropFirst().dropLast())
+    }
+    return host
+}
+
 // 从 host（可能含 :port 后缀）中拆出 host 与 port
+// IPv6 规则：带方括号的 [::1]:2222 按方括号后的冒号拆端口；裸 IPv6（多个冒号）整体视为主机
 func splitHostPort(_ hostPart: String) -> (host: String, port: String) {
+    // 方括号形式（可能带 user@ 前缀）：取最后一个 "]" 之后的 ":" 判断端口
+    if let close = hostPart.lastIndex(of: "]") {
+        let host = String(hostPart[...close])
+        let after = hostPart.index(after: close)
+        guard after < hostPart.endIndex, hostPart[after] == ":" else { return (host, "") }
+        let p = String(hostPart[hostPart.index(after: after)...])
+        if !p.isEmpty && p.allSatisfy({ $0.isNumber }) { return (host, p) }
+        return (host, "")
+    }
+    // 裸 IPv6（冒号 >= 2）不拆端口，否则 "::1" 会被拆成 host="::" port="1"
+    if hostPart.filter({ $0 == ":" }).count > 1 {
+        return (hostPart, "")
+    }
     // 仅当冒号后是纯数字才视为端口
     if let colon = hostPart.lastIndex(of: ":") {
         let h = String(hostPart[..<colon])
@@ -54,7 +84,7 @@ func splitHostPort(_ hostPart: String) -> (host: String, port: String) {
 }
 
 // 判断字符串是否为 IP 或主机名（用于「主机在前」格式的识别）
-// 主机在前格式：192.168.198.102\tjykj/P@ssw0rdo1! 或 host user/pass 等
+// 主机在前格式：192.0.2.102\tuser/S3cret@pass! 或 host user/pass 等
 func looksLikeHost(_ s: String) -> Bool {
     if s.isEmpty { return false }
     // IP 形式：x.x.x.x
@@ -74,7 +104,7 @@ func looksLikeHost(_ s: String) -> Bool {
 //   1) user@host / user:password@host / ssh://user@host / ssh://user:password@host
 //   2) host / user@host:port / host:port / 纯 IP 或域名
 //   3) 主机在前格式（Excel 复制常见）：host<TAB|空格|:|,|;|\|>user/pass
-//      例：192.168.198.102\tjykj/P@ssw0rdo1! 或 192.168.198.102 jykj/P@ssw0rdo1!
+//      例：192.0.2.102\tuser/S3cret@pass! 或 192.0.2.102 user/S3cret@pass!
 func parseConnection(_ input: String) -> ConnectionInfo {
     var s = input.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !s.isEmpty else { return ConnectionInfo(user: "", password: "", host: "", port: "") }
@@ -177,20 +207,32 @@ func maskSecret(_ s: String) -> String {
     s.isEmpty ? "" : "***"
 }
 
+// 找出「主机 与 路径」之间的冒号位置（兼容 IPv6）
+// [::1]:/p -> 方括号后的冒号；裸 IPv6（多个冒号）不含主机分隔符
+func remoteHostSepIndex(_ p: String) -> String.Index? {
+    if let close = p.lastIndex(of: "]") {
+        let after = p.index(after: close)
+        guard after < p.endIndex, p[after] == ":" else { return nil }
+        return after
+    }
+    guard let idx = p.firstIndex(of: ":") else { return nil }
+    // 以冒号开头（裸 IPv6 如 "::1"）不当作远端路径；IPv6 请用方括号写法 [::1]:path
+    if idx == p.startIndex { return nil }
+    return idx
+}
+
 // 判断是否为远端路径（user@host:path 或 host:path）
 func isRemotePath(_ p: String) -> Bool {
-    // 本地绝对路径以 / 开头；含 ":" 且冒号前不含 "/" 视为远端
+    // 本地绝对路径以 / 开头
     if p.hasPrefix("/") { return false }
-    if let idx = p.firstIndex(of: ":") {
-        let head = p[..<idx]
-        return !head.contains("/")
-    }
-    return false
+    guard let idx = remoteHostSepIndex(p) else { return false }
+    let head = p[..<idx]
+    return !head.contains("/")
 }
 
 // 拆分远端路径为 (host, path)
 func splitRemotePath(_ p: String) -> (host: String, path: String)? {
-    guard let idx = p.firstIndex(of: ":") else { return nil }
+    guard let idx = remoteHostSepIndex(p) else { return nil }
     let host = String(p[..<idx])
     let path = String(p[p.index(after: idx)...])
     return (host, path)
@@ -200,7 +242,7 @@ func splitRemotePath(_ p: String) -> (host: String, path: String)? {
 // rsync/scp 不支持 host:port:path 冒号写法，端口需拆出后走 ssh -p / scp -P
 // 注意：第一个冒号是 host 与「端口/路径」的边界，端口后面还会跟一个冒号
 func splitRemoteSpec(_ p: String) -> (host: String, port: String, path: String)? {
-    guard let idx = p.firstIndex(of: ":") else { return nil }
+    guard let idx = remoteHostSepIndex(p) else { return nil }
     let host = String(p[..<idx])
     let rest = String(p[p.index(after: idx)...])
     // rest 可能是纯 path，也可能是 "port:path"
@@ -228,20 +270,15 @@ func deriveDirection(src: String, dst: String) -> String {
 // 用 ssh 列出远端目录内容（BatchMode=yes 禁用密码交互，仅密钥免密可用）
 // 返回 (成功?, 目录列表字符串, 错误信息)
 func sshListDir(hostSpec: String, path: String) -> (ok: Bool, output: String, error: String) {
-    // hostSpec 可能是 user@host 或 user@host[:port]；端口用 -p 单独传
-    var hostNoPort = hostSpec
+    // hostSpec 可能是 user@host 或 user@host[:port]；端口用 -p 单独传，IPv6 去方括号
+    let (hostPart, port) = splitHostPort(hostSpec)
+    let sshHost = stripBrackets(hostPart.isEmpty ? hostSpec : hostPart)
     var portArg: [String] = []
-    if let colon = hostSpec.lastIndex(of: ":") {
-        let p = String(hostSpec[hostSpec.index(after: colon)...])
-        if !p.isEmpty && p.allSatisfy({ $0.isNumber }) {
-            hostNoPort = String(hostSpec[..<colon])
-            portArg = ["-p", p]
-        }
-    }
+    if !port.isEmpty { portArg = ["-p", port] }
     let remoteCmd = "ls -1p " + remotePathArg(path.isEmpty ? "~" : path)
     var args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
     args += portArg
-    args += [hostNoPort, remoteCmd]
+    args += [sshHost, remoteCmd]
 
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -347,6 +384,137 @@ func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool)
     return "scp" + scpFlags + " " + shellQuote(srcArg) + " " + shellQuote(dstArg)
 }
 
+// —— 启动脚本 PATH：可配置，不再硬编码本机的 bun/Homebrew 路径 ——
+func loadPathPrepend(path: String = configPath) -> [String] {
+    guard let data = FileManager.default.contents(atPath: path),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let raw = json["pathPrepend"] as? [Any] else {
+        return defaultPathPrepend
+    }
+    // 显式给出空数组表示「不注入额外路径」，与缺省值区分开
+    return raw.compactMap { $0 as? String }
+}
+
+// 生成 shell 的 PATH 导出语句；~ 展开成 $HOME（写在双引号里由 shell 展开）
+func buildPathExport(_ dirs: [String]) -> String {
+    var parts: [String] = []
+    for raw in dirs {
+        let d = raw.trimmingCharacters(in: .whitespaces)
+        if d.isEmpty { continue }
+        if d == "~" {
+            parts.append("$HOME")
+        } else if d.hasPrefix("~/") {
+            parts.append("$HOME" + String(d.dropFirst()))
+        } else {
+            parts.append(d.replacingOccurrences(of: "\"", with: ""))
+        }
+    }
+    guard !parts.isEmpty else { return "" }
+    return "export PATH=\"" + parts.joined(separator: ":") + ":$PATH\""
+}
+
+// —— 远端目录导航（浏览远端用，纯函数可测）——
+// 拼接：~/a + b -> ~/a/b；/ + b -> /b；base 为空 -> 直接返回 name
+func remoteJoin(base: String, name: String) -> String {
+    if name.isEmpty { return base }
+    if name == ".." { return remoteParent(base) }
+    if name == "." { return base.isEmpty ? "~" : base }
+    if name.hasPrefix("/") { return name }
+    if base.isEmpty { return name }
+    if base == "/" { return "/" + name }
+    if base.hasSuffix("/") { return base + name }
+    return base + "/" + name
+}
+
+// 上一层：~ -> ~；~ -> ~；~/a -> ~；~/a/b -> ~/a；/a -> /；/ -> /
+func remoteParent(_ path: String) -> String {
+    if path.isEmpty { return "~" }
+    var p = path
+    while p.count > 1 && p.hasSuffix("/") { p.removeLast() }
+    if p == "~" || p == "/" { return p }
+    if p.hasPrefix("~/") {
+        let rest = String(p.dropFirst(2))
+        guard let idx = rest.lastIndex(of: "/") else { return "~" }
+        return "~/" + String(rest[..<idx])
+    }
+    if p.hasPrefix("/") {
+        guard let idx = p.lastIndex(of: "/") else { return "/" }
+        return idx == p.startIndex ? "/" : String(p[..<idx])
+    }
+    // 相对路径
+    guard let idx = p.lastIndex(of: "/") else { return "." }
+    return idx == p.startIndex ? "/" : String(p[..<idx])
+}
+
+// 把路径拆成 (目录, 名称)：/a/b -> (/a, b)；/ -> (/, .)；a -> (., a)
+func splitDirAndName(_ path: String) -> (dir: String, name: String) {
+    var p = path
+    while p.count > 1 && p.hasSuffix("/") { p.removeLast() }
+    if p.isEmpty || p == "/" { return ("/", ".") }
+    guard let idx = p.lastIndex(of: "/") else { return (".", p) }
+    let dir = idx == p.startIndex ? "/" : String(p[..<idx])
+    let name = String(p[p.index(after: idx)...])
+    return (dir, name.isEmpty ? "." : name)
+}
+
+// 服务器↔服务器直拷失败时的一键中转：本机 tar 流（不占本地磁盘、不依赖源机 rsync）
+// ssh 源机 tar 出 -> 本机管道 -> ssh 目标机 tar 入（目标路径自动 mkdir -p）
+func buildRelayCopyCommand(params: CopyParams) -> String {
+    guard let s = splitRemoteSpec(params.source),
+          let t = splitRemoteSpec(params.target),
+          !s.path.isEmpty, !t.path.isEmpty else {
+        return ""
+    }
+    let (sdir, sname) = splitDirAndName(s.path)
+    var srcSSH = "ssh"
+    if !s.port.isEmpty { srcSSH += " -p \(s.port)" }
+    var dstSSH = "ssh"
+    if !t.port.isEmpty { dstSSH += " -p \(t.port)" }
+    let srcCmd = "tar -cf - -C " + shellQuote(sdir) + " " + shellQuote(sname)
+    let dstCmd = "mkdir -p " + shellQuote(t.path) + " && tar -xf - -C " + shellQuote(t.path)
+    return srcSSH + " " + shellQuote(stripBrackets(s.host)) + " " + shellQuote(srcCmd) +
+        " | " + dstSSH + " " + shellQuote(stripBrackets(t.host)) + " " + shellQuote(dstCmd)
+}
+
+// —— 生成 Terminal 启动脚本（纯函数，便于 zsh -n 语法校验与断言）——
+// autoCloseOnSuccess：成功时按 tty 精确关闭本 tab 所在窗口（匹配不到则不关，避免误关其它窗口）
+func buildCommandScript(cmdLine: String, pathPrepend: [String], autoCloseOnSuccess: Bool) -> String {
+    let pathLine = buildPathExport(pathPrepend)
+    var lines: [String] = ["#!/bin/zsh"]
+    if !pathLine.isEmpty { lines.append(pathLine) }
+    // 记录本 tab 的 tty，供成功关窗时精确匹配
+    lines.append("_tty=$(tty 2>/dev/null)")
+    lines.append(cmdLine)
+    if autoCloseOnSuccess {
+        lines.append("local _rc=$?")
+        lines.append("echo \"===== 拷贝完成（退出码 $_rc）=====\"")
+        lines.append("if [ $_rc -eq 0 ]; then")
+        lines.append("    sleep 2")
+        lines.append("    osascript -e 'tell application \"Terminal\"' \\")
+        lines.append("      -e 'try' \\")
+        lines.append("      -e 'repeat with w in windows' \\")
+        lines.append("      -e 'if (tty of selected tab of w) is \"'\"$_tty\"'\" then' \\")
+        lines.append("      -e 'close w saving no' \\")
+        lines.append("      -e 'exit repeat' \\")
+        lines.append("      -e 'end if' \\")
+        lines.append("      -e 'end repeat' \\")
+        lines.append("      -e 'end try' \\")
+        lines.append("      -e 'end tell' >/dev/null 2>&1")
+        lines.append("fi")
+        lines.append("exit $_rc")
+    }
+    return lines.joined(separator: "\n") + "\n"
+}
+
+// 文件修改时间（用于 ~/.ssh/config 变更后刷新免密主机缓存）
+func fileModificationDate(_ path: String) -> Date? {
+    (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+}
+
+func sshConfigPath() -> String {
+    NSHomeDirectory() + "/.ssh/config"
+}
+
 func defaultConfigJSON() -> [String: Any] {
     // 缺省配置用占位路径（不携带任何本机/内网信息），首次启动写出后由用户自行修改
     return [
@@ -357,6 +525,7 @@ func defaultConfigJSON() -> [String: Any] {
         "tools": [
             ["name": "opencode", "cmd": "opencode"],
         ],
+        "pathPrepend": defaultPathPrepend,
         "copy": [
             "hosts": [],
             "defaultFlags": [],

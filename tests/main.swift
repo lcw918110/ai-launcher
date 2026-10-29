@@ -79,8 +79,8 @@ r = pc("user@host:2222")
 expectEqual(r.host, "host", "parse user@host:port: host")
 expectEqual(r.port, "2222", "parse user@host:port: port")
 
-r = pc("192.168.198.101")
-expectEqual(r.host, "192.168.198.101", "parse 纯 IP")
+r = pc("192.0.2.101")
+expectEqual(r.host, "192.0.2.101", "parse 纯 IP")
 
 // 回归（曾把端口解析成用户名的 bug）
 r = pc("192.168.1.5:2222")
@@ -94,30 +94,30 @@ expectEqual(r.port, "2222", "parse host:端口: port")
 expectTrue(r.user.isEmpty, "parse host:端口: 用户名应为空")
 
 // 主机在前格式（Excel 复制常见）
-r = pc("192.168.198.102\tjykj/P@ssw0rdo1!")
-expectEqual(r.host, "192.168.198.102", "parse tab 分隔: host")
-expectEqual(r.user, "jykj", "parse tab 分隔: user")
-expectEqual(r.password, "P@ssw0rdo1!", "parse tab 分隔: pass")
+r = pc("192.0.2.102\tuser/S3cret@pass!")
+expectEqual(r.host, "192.0.2.102", "parse tab 分隔: host")
+expectEqual(r.user, "user", "parse tab 分隔: user")
+expectEqual(r.password, "S3cret@pass!", "parse tab 分隔: pass")
 
-r = pc("192.168.198.102 jykj/P@ssw0rdo1!")
-expectEqual(r.user, "jykj", "parse 空格分隔: user")
-expectEqual(r.password, "P@ssw0rdo1!", "parse 空格分隔: pass")
+r = pc("192.0.2.102 user/S3cret@pass!")
+expectEqual(r.user, "user", "parse 空格分隔: user")
+expectEqual(r.password, "S3cret@pass!", "parse 空格分隔: pass")
 
-r = pc("192.168.198.102:jykj:P@ssw0rdo1!")
-expectEqual(r.host, "192.168.198.102", "parse 冒号分隔: host")
-expectEqual(r.user, "jykj", "parse 冒号分隔: user")
-expectEqual(r.password, "P@ssw0rdo1!", "parse 冒号分隔: pass")
+r = pc("192.0.2.102:user:S3cret@pass!")
+expectEqual(r.host, "192.0.2.102", "parse 冒号分隔: host")
+expectEqual(r.user, "user", "parse 冒号分隔: user")
+expectEqual(r.password, "S3cret@pass!", "parse 冒号分隔: pass")
 
-r = pc("192.168.198.102|jykj|P@ssw0rdo1!")
-expectEqual(r.user, "jykj", "parse 竖线分隔: user")
-expectEqual(r.password, "P@ssw0rdo1!", "parse 竖线分隔: pass")
+r = pc("192.0.2.102|user|S3cret@pass!")
+expectEqual(r.user, "user", "parse 竖线分隔: user")
+expectEqual(r.password, "S3cret@pass!", "parse 竖线分隔: pass")
 
-r = pc("192.168.198.102,jykj/P@ssw0rdo1!")
-expectEqual(r.user, "jykj", "parse 逗号分隔: user")
-expectEqual(r.password, "P@ssw0rdo1!", "parse 逗号分隔: pass")
+r = pc("192.0.2.102,user/S3cret@pass!")
+expectEqual(r.user, "user", "parse 逗号分隔: user")
+expectEqual(r.password, "S3cret@pass!", "parse 逗号分隔: pass")
 
-r = pc("192.168.198.102 jykj")
-expectEqual(r.user, "jykj", "parse 仅主机+用户")
+r = pc("192.0.2.102 user")
+expectEqual(r.user, "user", "parse 仅主机+用户")
 expectTrue(r.password.isEmpty, "parse 仅主机+用户: 无密码")
 
 r = pc("example.com")
@@ -140,10 +140,10 @@ expectTrue(r.host.isEmpty && r.user.isEmpty, "parse 空串返回全空")
 // ============================================================
 // 4. buildHostSpec
 // ============================================================
-expectEqual(buildHostSpec(ConnectionInfo(user: "jykj", password: "", host: "192.168.1.5", port: "")),
-            "jykj@192.168.1.5", "buildHostSpec: 无端口")
-expectEqual(buildHostSpec(ConnectionInfo(user: "jykj", password: "", host: "192.168.1.5", port: "2222")),
-            "jykj@192.168.1.5:2222", "buildHostSpec: 带端口")
+expectEqual(buildHostSpec(ConnectionInfo(user: "user", password: "", host: "192.168.1.5", port: "")),
+            "user@192.168.1.5", "buildHostSpec: 无端口")
+expectEqual(buildHostSpec(ConnectionInfo(user: "user", password: "", host: "192.168.1.5", port: "2222")),
+            "user@192.168.1.5:2222", "buildHostSpec: 带端口")
 expectEqual(buildHostSpec(ConnectionInfo(user: "", password: "", host: "h", port: "")),
             "h", "buildHostSpec: 无用户")
 
@@ -156,7 +156,7 @@ expectEqual(shellQuote("a'b"), "'a'\\''b'", "shellQuote: 单引号")
 // 回归（~ 被引号包住导致远端 ls 找不到目录的 bug）
 expectEqual(remotePathArg("~"), "~", "remotePathArg: ~ 必须裸写")
 expectEqual(remotePathArg("~/data"), "~'/data'", "remotePathArg: ~/data 波浪号裸写+引号拼接")
-expectEqual(remotePathArg("/home/jykj"), "'/home/jykj'", "remotePathArg: 绝对路径")
+expectEqual(remotePathArg("/home/user"), "'/home/user'", "remotePathArg: 绝对路径")
 expectEqual(remotePathArg("my dir"), "'my dir'", "remotePathArg: 含空格")
 expectEqual(remotePathArg(""), "''", "remotePathArg: 空串")
 
@@ -167,22 +167,22 @@ expectEqual(maskSecret("secret"), "***", "maskSecret: 非空脱敏")
 // 6. isRemotePath / splitRemotePath / splitRemoteSpec
 // ============================================================
 expectTrue(!isRemotePath("/Users/me/data"), "isRemotePath: 本地绝对路径")
-expectTrue(isRemotePath("jykj@host:/home/data"), "isRemotePath: user@host:path")
+expectTrue(isRemotePath("user@host:/home/data"), "isRemotePath: user@host:path")
 expectTrue(isRemotePath("host:path"), "isRemotePath: host:path")
 expectTrue(!isRemotePath("plain"), "isRemotePath: 相对路径无冒号")
 expectTrue(!isRemotePath("a/b:c"), "isRemotePath: 冒号前含斜杠视为本地")
 
-let srp = splitRemotePath("jykj@host:/p")
-expectEqual(srp?.host, "jykj@host", "splitRemotePath: host")
+let srp = splitRemotePath("user@host:/p")
+expectEqual(srp?.host, "user@host", "splitRemotePath: host")
 expectEqual(srp?.path, "/p", "splitRemotePath: path")
 expectTrue(splitRemotePath("nocolon") == nil, "splitRemotePath: 无冒号返回 nil")
 
-let srs = splitRemoteSpec("jykj@192.168.1.5:2222:/data")
-expectEqual(srs?.host, "jykj@192.168.1.5", "splitRemoteSpec: host（含端口时拆出）")
+let srs = splitRemoteSpec("user@192.168.1.5:2222:/data")
+expectEqual(srs?.host, "user@192.168.1.5", "splitRemoteSpec: host（含端口时拆出）")
 expectEqual(srs?.port, "2222", "splitRemoteSpec: port")
 expectEqual(srs?.path, "/data", "splitRemoteSpec: path")
-let srs2 = splitRemoteSpec("jykj@host:/p")
-expectEqual(srs2?.host, "jykj@host", "splitRemoteSpec: 无端口 host")
+let srs2 = splitRemoteSpec("user@host:/p")
+expectEqual(srs2?.host, "user@host", "splitRemoteSpec: 无端口 host")
 expectTrue(srs2?.port.isEmpty ?? false, "splitRemoteSpec: 无端口 port 为空")
 expectEqual(srs2?.path, "/p", "splitRemoteSpec: 无端口 path")
 expectTrue(splitRemoteSpec("plain") == nil, "splitRemoteSpec: 无冒号返回 nil")
@@ -190,9 +190,9 @@ expectTrue(splitRemoteSpec("plain") == nil, "splitRemoteSpec: 无冒号返回 ni
 // ============================================================
 // 7. deriveDirection
 // ============================================================
-expectEqual(deriveDirection(src: "/Users/me/data", dst: "jykj@h:/home/data"), "push", "deriveDirection: 本机→远端")
-expectEqual(deriveDirection(src: "jykj@h:/home/data", dst: "/Users/me/data"), "pull", "deriveDirection: 远端→本机")
-expectEqual(deriveDirection(src: "jykj@h:/a", dst: "u@h2:/b"), "direct", "deriveDirection: 双远端直拷")
+expectEqual(deriveDirection(src: "/Users/me/data", dst: "user@h:/home/data"), "push", "deriveDirection: 本机→远端")
+expectEqual(deriveDirection(src: "user@h:/home/data", dst: "/Users/me/data"), "pull", "deriveDirection: 远端→本机")
+expectEqual(deriveDirection(src: "user@h:/a", dst: "u@h2:/b"), "direct", "deriveDirection: 双远端直拷")
 expectEqual(deriveDirection(src: "/a", dst: "/b"), "local", "deriveDirection: 双本机")
 
 // ============================================================
@@ -208,54 +208,54 @@ func cmd(_ source: String, _ target: String,
         hostSpec: ""), rsyncAvailable: rsync)
 }
 
-expectEqual(cmd("/Users/me/data", "jykj@192.168.198.101:/home/jykj/data"),
-            "rsync -r -a --partial --append-verify --info=progress2 '/Users/me/data' 'jykj@192.168.198.101:/home/jykj/data'",
+expectEqual(cmd("/Users/me/data", "user@192.0.2.101:/home/user/data"),
+            "rsync -r -a --partial --append-verify --info=progress2 '/Users/me/data' 'user@192.0.2.101:/home/user/data'",
             "buildCopyCommand: push 全选项")
 
-expectEqual(cmd("/Users/me/data", "jykj@192.168.1.5:2222:/data"),
-            "rsync -r -a --partial --append-verify --info=progress2 -e 'ssh -p 2222' '/Users/me/data' 'jykj@192.168.1.5:/data'",
+expectEqual(cmd("/Users/me/data", "user@192.168.1.5:2222:/data"),
+            "rsync -r -a --partial --append-verify --info=progress2 -e 'ssh -p 2222' '/Users/me/data' 'user@192.168.1.5:/data'",
             "buildCopyCommand: push 自定义端口走 -e ssh -p（回归）")
 
-expectEqual(cmd("jykj@192.168.1.5:2222:/data/x", "/Users/me/data", rsync: false),
-            "scp -r -p -P 2222 'jykj@192.168.1.5:/data/x' '/Users/me/data'",
+expectEqual(cmd("user@192.168.1.5:2222:/data/x", "/Users/me/data", rsync: false),
+            "scp -r -p -P 2222 'user@192.168.1.5:/data/x' '/Users/me/data'",
             "buildCopyCommand: pull 无 rsync 降级 scp -P（回归）")
 
-expectEqual(cmd("jykj@192.168.198.101:/home/data", "/Users/me/data"),
-            "rsync -r -a --partial --append-verify --info=progress2 'jykj@192.168.198.101:/home/data' '/Users/me/data'",
+expectEqual(cmd("user@192.0.2.101:/home/data", "/Users/me/data"),
+            "rsync -r -a --partial --append-verify --info=progress2 'user@192.0.2.101:/home/data' '/Users/me/data'",
             "buildCopyCommand: pull 默认端口")
 
 // 直拷：ssh 到源机执行 rsync，源机端口走 ssh -p，目标机端口走内层 -e "ssh -p"
-expectEqual(cmd("jykj@192.168.1.5:2222:/data/a", "jykj@192.168.1.6:2200:/data/b"),
-            "ssh -t -p 2222 'jykj@192.168.1.5' 'rsync -r -a --partial --append-verify --info=progress2 -e '\\''ssh -p 2200'\\'' '\\''/data/a'\\'' '\\''jykj@192.168.1.6:/data/b'\\'''",
+expectEqual(cmd("user@192.168.1.5:2222:/data/a", "user@192.168.1.6:2200:/data/b"),
+            "ssh -t -p 2222 'user@192.168.1.5' 'rsync -r -a --partial --append-verify --info=progress2 -e '\\''ssh -p 2200'\\'' '\\''/data/a'\\'' '\\''user@192.168.1.6:/data/b'\\'''",
             "buildCopyCommand: 双远端直拷+双端口")
 
-expectEqual(cmd("jykj@h1:/a", "jykj@h2:/b"),
-            "ssh -t 'jykj@h1' 'rsync -r -a --partial --append-verify --info=progress2 '\\''/a'\\'' '\\''jykj@h2:/b'\\'''",
+expectEqual(cmd("user@h1:/a", "user@h2:/b"),
+            "ssh -t 'user@h1' 'rsync -r -a --partial --append-verify --info=progress2 '\\''/a'\\'' '\\''user@h2:/b'\\'''",
             "buildCopyCommand: 双远端直拷默认端口")
 
 expectEqual(cmd("/Users/me/a", "/Users/me/b", recursive: true, preserveAttrs: false, resume: false),
             "rsync -r --info=progress2 '/Users/me/a' '/Users/me/b'",
             "buildCopyCommand: 本地拷贝最小选项")
 
-expectEqual(cmd("/Users/me/my data", "jykj@h:/tmp/x y", recursive: false, preserveAttrs: false, resume: false),
-            "rsync --info=progress2 '/Users/me/my data' 'jykj@h:/tmp/x y'",
+expectEqual(cmd("/Users/me/my data", "user@h:/tmp/x y", recursive: false, preserveAttrs: false, resume: false),
+            "rsync --info=progress2 '/Users/me/my data' 'user@h:/tmp/x y'",
             "buildCopyCommand: 路径含空格正确加引号")
 
 // 注：isRemotePath 为真时 splitRemoteSpec 必然可解析，故「解析失败返回空」不可达；
 // 这里改为覆盖「双远端但缺路径」的边界：host: 后为空路径仍应产出合法直拷命令
-expectEqual(cmd("jykj@h1:/a", "jykj@h2:"),
-            "ssh -t 'jykj@h1' 'rsync -r -a --partial --append-verify --info=progress2 '\\''/a'\\'' '\\''jykj@h2:'\\'''",
+expectEqual(cmd("user@h1:/a", "user@h2:"),
+            "ssh -t 'user@h1' 'rsync -r -a --partial --append-verify --info=progress2 '\\''/a'\\'' '\\''user@h2:'\\'''",
             "buildCopyCommand: 双远端空路径仍可拼命令")
 
 // ============================================================
 // 9. buildFillPlan（填充决策六场景，覆盖串框 bug 回归）
 // ============================================================
-let spec = "jykj@192.168.198.102"
+let spec = "user@192.0.2.102"
 var p = buildFillPlan(trigger: .target, spec: spec,
                       sourceEmpty: true, targetEmpty: true, connEmpty: true, hostEmpty: true, userEmpty: true)
 expectEqual(p.targetValue, "\(spec):", "fillPlan 场景1: 目标框触发-都空 → 填目标框")
-expectEqual(p.hostValue, "192.168.198.102", "fillPlan 场景1: 联动填主机")
-expectEqual(p.userValue, "jykj", "fillPlan 场景1: 联动填用户")
+expectEqual(p.hostValue, "192.0.2.102", "fillPlan 场景1: 联动填主机")
+expectEqual(p.userValue, "user", "fillPlan 场景1: 联动填用户")
 expectTrue(p.sourceValue == nil && p.connValue == nil, "fillPlan 场景1: 不串到其他框")
 
 p = buildFillPlan(trigger: .source, spec: spec,
@@ -268,8 +268,8 @@ expectEqual(p.connValue, spec, "fillPlan 场景3: 连接串框触发 → 填连�
 
 p = buildFillPlan(trigger: .host, spec: spec,
                   sourceEmpty: true, targetEmpty: true, connEmpty: true, hostEmpty: true, userEmpty: true)
-expectEqual(p.hostValue, "192.168.198.102", "fillPlan 场景4: IP框触发 → 填主机框")
-expectEqual(p.userValue, "jykj", "fillPlan 场景4: 联动填用户框")
+expectEqual(p.hostValue, "192.0.2.102", "fillPlan 场景4: IP框触发 → 填主机框")
+expectEqual(p.userValue, "user", "fillPlan 场景4: 联动填用户框")
 expectTrue(p.sourceValue == nil && p.targetValue == nil, "fillPlan 场景4: 不动路径框")
 
 p = buildFillPlan(trigger: .none, spec: spec,
@@ -340,8 +340,8 @@ let sshConf = """
 Host *
   User nobody
 
-Host 192.168.198.101
-  User jykj
+Host 192.0.2.101
+  User user
 
 # 注释行
 Host myserver
@@ -351,7 +351,7 @@ Host myserver
 try? sshConf.write(toFile: sshPath, atomically: true, encoding: .utf8)
 let hosts = loadSSHKnownHosts(path: sshPath)
 expectEqual(hosts.count, 2, "loadSSHKnownHosts: 跳过通配符 Host *")
-expectEqual(hosts[0].spec, "jykj@192.168.198.101", "loadSSHKnownHosts: 无 HostName 用 Host 别名")
+expectEqual(hosts[0].spec, "user@192.0.2.101", "loadSSHKnownHosts: 无 HostName 用 Host 别名")
 expectEqual(hosts[1].spec, "admin@example.com", "loadSSHKnownHosts: HostName 覆盖别名")
 expectTrue(loadSSHKnownHosts(path: tmpDir + "/not-exist").isEmpty, "loadSSHKnownHosts: 文件不存在返回空")
 
@@ -361,6 +361,130 @@ expectTrue(loadSSHKnownHosts(path: tmpDir + "/not-exist").isEmpty, "loadSSHKnown
 let sl = sshListDir(hostSpec: "nonexistent-host.invalid", path: "~")
 expectTrue(!sl.ok, "sshListDir: 不可达主机返回失败")
 expectTrue(!sl.error.isEmpty, "sshListDir: 失败时带回错误信息")
+
+// ============================================================
+// 13. IPv6（方括号写法）
+// ============================================================
+expectEqual(splitHostPort("[::1]").host, "[::1]", "IPv6: 方括号主机")
+expectTrue(splitHostPort("[::1]").port.isEmpty, "IPv6: 方括号无端口")
+expectEqual(splitHostPort("[::1]:2222").host, "[::1]", "IPv6: 方括号+端口 host")
+expectEqual(splitHostPort("[::1]:2222").port, "2222", "IPv6: 方括号+端口 port")
+expectEqual(splitHostPort("user@[::1]:2222").host, "user@[::1]", "IPv6: user@方括号+端口 host")
+expectEqual(splitHostPort("user@[::1]:2222").port, "2222", "IPv6: user@方括号+端口 port")
+// 裸 IPv6 不能把最后一段当端口
+expectEqual(splitHostPort("::1").host, "::1", "IPv6: 裸地址不拆端口")
+expectTrue(splitHostPort("::1").port.isEmpty, "IPv6: 裸地址无端口")
+expectEqual(splitHostPort("fe80::1%en0").host, "fe80::1%en0", "IPv6: 链路本地地址")
+
+expectEqual(stripBrackets("[::1]"), "::1", "stripBrackets: 纯主机")
+expectEqual(stripBrackets("user@[::1]"), "user@::1", "stripBrackets: 带用户")
+expectEqual(stripBrackets("host"), "host", "stripBrackets: 非 IPv6 原样")
+
+expectTrue(isRemotePath("user@[::1]:/data"), "IPv6: isRemotePath 识别方括号风格远端路径")
+let srp6 = splitRemotePath("user@[::1]:/data")
+expectEqual(srp6?.host, "user@[::1]", "IPv6: splitRemotePath host")
+expectEqual(srp6?.path, "/data", "IPv6: splitRemotePath path")
+let srs6 = splitRemoteSpec("[::1]:2222:/data")
+expectEqual(srs6?.port, "2222", "IPv6: splitRemoteSpec port")
+expectEqual(srs6?.path, "/data", "IPv6: splitRemoteSpec path")
+
+r = pc("user@[::1]:2222")
+expectEqual(r.host, "[::1]", "IPv6: parseConnection host")
+expectEqual(r.port, "2222", "IPv6: parseConnection port")
+
+// ============================================================
+// 14. PATH 前缀（可配置，不再硬编码）
+// ============================================================
+expectEqual(buildPathExport(["~/.bun/bin", "/opt/homebrew/bin"]),
+            "export PATH=\"$HOME/.bun/bin:/opt/homebrew/bin:$PATH\"", "buildPathExport: ~ 展开为 $HOME")
+expectEqual(buildPathExport([]), "", "buildPathExport: 空数组不输出")
+expectEqual(buildPathExport(["  ", ""]), "", "buildPathExport: 空白项被忽略")
+expectEqual(buildPathExport(["/usr/local/bin"]), "export PATH=\"/usr/local/bin:$PATH\"", "buildPathExport: 绝对路径")
+
+// 缺少 pathPrepend 键 → 缺省值
+expectEqual(loadPathPrepend(path: goodPath), defaultPathPrepend, "loadPathPrepend: 缺键用缺省值")
+let emptyPathConfig = tmpDir + "/empty-path.json"
+try? "{\"pathPrepend\": []}".write(toFile: emptyPathConfig, atomically: true, encoding: .utf8)
+expectTrue(loadPathPrepend(path: emptyPathConfig).isEmpty, "loadPathPrepend: 显式空数组表示不注入")
+let customPathConfig = tmpDir + "/custom-path.json"
+try? "{\"pathPrepend\": [\"/opt/x/bin\", \"/opt/y/bin\"]}".write(toFile: customPathConfig, atomically: true, encoding: .utf8)
+expectEqual(loadPathPrepend(path: customPathConfig), ["/opt/x/bin", "/opt/y/bin"], "loadPathPrepend: 读取自定义值")
+
+// ============================================================
+// 15. 远端路径导航（浏览远端：进入下一层 / 上一级）
+// ============================================================
+expectEqual(remoteJoin(base: "~", name: "data"), "~/data", "remoteJoin: ~ + data")
+expectEqual(remoteJoin(base: "~/data", name: "sub"), "~/data/sub", "remoteJoin: ~/data + sub")
+expectEqual(remoteJoin(base: "/", name: "var"), "/var", "remoteJoin: / + var")
+expectEqual(remoteJoin(base: "/data/", name: "x"), "/data/x", "remoteJoin: 尾部斜杠不重复")
+expectEqual(remoteJoin(base: "/data", name: "/abs"), "/abs", "remoteJoin: 子项是绝对路径")
+expectEqual(remoteJoin(base: "~/data", name: ".."), "~", "remoteJoin: .. 走上一级")
+
+expectEqual(remoteParent("~"), "~", "remoteParent: ~ 的上一层仍是 ~")
+expectEqual(remoteParent("~/data"), "~", "remoteParent: ~/data → ~")
+expectEqual(remoteParent("~/data/sub"), "~/data", "remoteParent: ~/data/sub → ~/data")
+expectEqual(remoteParent("/"), "/", "remoteParent: / 的上一层仍是 /")
+expectEqual(remoteParent("/data"), "/", "remoteParent: /data → /")
+expectEqual(remoteParent("/data/sub/"), "/data", "remoteParent: 尾部斜杠")
+expectEqual(remoteParent(""), "~", "remoteParent: 空串回 ~")
+
+expectEqual(splitDirAndName("/data/a").dir, "/data", "splitDirAndName: 目录")
+expectEqual(splitDirAndName("/data/a").name, "a", "splitDirAndName: 名称")
+expectEqual(splitDirAndName("/").name, ".", "splitDirAndName: 根路径用 .")
+expectEqual(splitDirAndName("rel").dir, ".", "splitDirAndName: 相对路径")
+
+// ============================================================
+// 16. buildRelayCopyCommand（直拷失败的一键中转）
+// ============================================================
+expectEqual(buildRelayCopyCommand(params: CopyParams(
+                source: "user@192.168.1.5:/data/a", target: "user@192.168.1.6:/data/b",
+                recursive: true, preserveAttrs: true, resume: true, hostSpec: "")),
+            "ssh 'user@192.168.1.5' 'tar -cf - -C '\\''/data'\\'' '\\''a'\\''' | ssh 'user@192.168.1.6' 'mkdir -p '\\''/data/b'\\'' && tar -xf - -C '\\''/data/b'\\'''",
+            "buildRelayCopyCommand: 双远端默认端口")
+
+expectEqual(buildRelayCopyCommand(params: CopyParams(
+                source: "user@192.168.1.5:2222:/data/a", target: "user@192.168.1.6:2200:/data/b",
+                recursive: true, preserveAttrs: true, resume: true, hostSpec: "")),
+            "ssh -p 2222 'user@192.168.1.5' 'tar -cf - -C '\\''/data'\\'' '\\''a'\\''' | ssh -p 2200 'user@192.168.1.6' 'mkdir -p '\\''/data/b'\\'' && tar -xf - -C '\\''/data/b'\\'''",
+            "buildRelayCopyCommand: 双端口")
+
+expectEqual(buildRelayCopyCommand(params: CopyParams(
+                source: "/local/a", target: "user@h:/data/b",
+                recursive: true, preserveAttrs: true, resume: true, hostSpec: "")),
+            "", "buildRelayCopyCommand: 非双远端返回空")
+
+// ============================================================
+// 17. buildCommandScript（Terminal 启动脚本：PATH 注入 / tty 精确关窗 / 语法校验）
+// ============================================================
+let script = buildCommandScript(cmdLine: "echo hi", pathPrepend: ["~/.bun/bin"], autoCloseOnSuccess: true)
+expectTrue(script.hasPrefix("#!/bin/zsh"), "buildCommandScript: shebang")
+expectTrue(script.contains("export PATH=\"$HOME/.bun/bin:$PATH\""), "buildCommandScript: 注入 PATH 前缀")
+expectTrue(script.contains("_tty=$(tty 2>/dev/null)"), "buildCommandScript: 记录本 tab 的 tty")
+expectTrue(script.contains("tty of selected tab of w"), "buildCommandScript: 按 tty 精确匹配窗口（G-8）")
+expectTrue(script.contains("saving no"), "buildCommandScript: 关窗不走保存询问")
+expectTrue(!script.contains("front window"), "buildCommandScript: 不再用 front window 误关")
+expectTrue(script.contains("exit $_rc"), "buildCommandScript: 透出退出码")
+
+let simpleScript = buildCommandScript(cmdLine: "echo hi", pathPrepend: [], autoCloseOnSuccess: false)
+expectTrue(!simpleScript.contains("osascript"), "buildCommandScript: 非一次性任务不自动关窗")
+expectTrue(!simpleScript.contains("export PATH"), "buildCommandScript: PATH 前缀为空时不输出")
+
+// 用 zsh -n 校验生成的脚本语法（引号/续行写错会在这里被抓到）
+func zshSyntaxOK(_ content: String) -> Bool {
+    let path = NSTemporaryDirectory() + "ai-launcher-script-\(UUID().uuidString).command"
+    guard (try? content.write(toFile: path, atomically: true, encoding: .utf8)) != nil else { return false }
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    p.arguments = ["-n", path]
+    p.standardOutput = FileHandle.nullDevice
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return false }
+    p.waitUntilExit()
+    try? FileManager.default.removeItem(atPath: path)
+    return p.terminationStatus == 0
+}
+expectTrue(zshSyntaxOK(script), "buildCommandScript: 一次性脚本 zsh -n 语法通过")
+expectTrue(zshSyntaxOK(simpleScript), "buildCommandScript: 普通脚本 zsh -n 语法通过")
 
 // ============================================================
 // 汇总

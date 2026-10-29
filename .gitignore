@@ -1,5 +1,6 @@
 .DS_Store
 /build/
+/AI终端启动器
 /AI启动器菜单栏
 *.app
 config.json

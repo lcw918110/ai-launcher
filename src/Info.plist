@@ -3,11 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>local.ai-launcher.menubar</string>
+	<string>local.ai-launcher.desktop</string>
 	<key>CFBundleName</key>
-	<string>AI启动器菜单栏</string>
+	<string>AI终端启动器</string>
+	<key>CFBundleDisplayName</key>
+	<string>AI终端启动器</string>
 	<key>CFBundleExecutable</key>
-	<string>AI启动器菜单栏</string>
+	<string>AI终端启动器</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>LSMinimumSystemVersion</key>

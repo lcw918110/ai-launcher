@@ -13,6 +13,11 @@
       "cmd": "omp"
     }
   ],
+  "pathPrepend": [
+    "~/.bun/bin",
+    "/opt/homebrew/bin",
+    "/usr/local/bin"
+  ],
   "copy": {
     "hosts": [
       {
