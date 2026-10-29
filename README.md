@@ -44,7 +44,7 @@ chmod +x scripts/build.sh
 | `tests/main.swift` | Core 全量断言用例（181 条，纯命令行，无 GUI 副作用） |
 | `scripts/build.sh` / `scripts/test.sh` | 编译安装 / 跑测试 |
 | `.github/workflows/ci.yml` | CI：编译 + 跑测试 |
-| `LICENSE` | MIT |
+| `LICENSE` / `CHANGELOG.md` | MIT 许可 / 版本改动记录（当前 0.4.0） |
 
 ## 测试
 
