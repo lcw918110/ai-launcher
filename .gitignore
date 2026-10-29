@@ -1,0 +1,9 @@
+.DS_Store
+/build/
+/AI启动器菜单栏
+*.app
+config.json
+.cursor/
+.workbuddy-ai/
+.workbuddy/
+.wanxiangshu/

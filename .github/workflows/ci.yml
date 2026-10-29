@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 编译应用二进制（不做 GUI 安装）
+        run: swiftc -O src/Core.swift src/main.swift -o /tmp/ai-launcher
+
+      - name: 运行 Core 逻辑层测试
+        run: |
+          chmod +x scripts/test.sh
+          ./scripts/test.sh

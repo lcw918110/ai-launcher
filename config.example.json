@@ -1,0 +1,25 @@
+{
+  "dirs": [
+    "/path/to/project-a",
+    "/path/to/project-b"
+  ],
+  "tools": [
+    {
+      "name": "opencode",
+      "cmd": "opencode"
+    },
+    {
+      "name": "omp（Oh My Pi）",
+      "cmd": "omp"
+    }
+  ],
+  "copy": {
+    "hosts": [
+      {
+        "name": "示例机",
+        "spec": "user@192.0.2.10"
+      }
+    ],
+    "defaultFlags": []
+  }
+}
