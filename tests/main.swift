@@ -454,6 +454,52 @@ expectEqual(buildRelayCopyCommand(params: CopyParams(
             "", "buildRelayCopyCommand: 非双远端返回空")
 
 // ============================================================
+// 16b. 可续传中转（两段 rsync + 稳定暂存目录）
+// ============================================================
+let relayRoot = "/tmp/relay-root"
+let relayParams = CopyParams(source: "user@192.168.1.5:/data/big.iso",
+                             target: "user@192.168.1.6:/data/dst",
+                             recursive: true, preserveAttrs: true, resume: true, hostSpec: "")
+let relayCmd = buildRelayResumeCommand(params: relayParams, root: relayRoot)
+expectTrue(relayCmd.contains("--partial"), "relayResume: 带 --partial（断点续传）")
+expectTrue(relayCmd.contains("--partial-dir=.rsync-partial"), "relayResume: 用 partial-dir 保留半截文件")
+expectTrue(!relayCmd.contains("--append-verify"), "relayResume: 不用 append-verify（目标被改短时会写坏）")
+expectTrue(relayCmd.hasPrefix("mkdir -p '"), "relayResume: 先建暂存目录")
+expectTrue(relayCmd.contains("user@192.168.1.6:/data/dst'"), "relayResume: 上传到目标路径")
+expectTrue(relayCmd.contains("rm -rf '"), "relayResume: 成功后清理暂存")
+// 两段 rsync 用 && 串起来，中断时后续步骤不执行，暂存保留 → 下次可续
+// 用 info 参数计数，不能数 "rsync" 子串（--partial-dir=.rsync-partial 里也有）
+expectEqual(relayCmd.components(separatedBy: "--info=progress2").count - 1, 2, "relayResume: 恰好两段 rsync")
+expectTrue(relayCmd.contains(" && rsync"), "relayResume: 两段之间用 && 串联")
+
+// 暂存目录必须稳定（同一对源/目标两次调用得到同一路径），否则无法续传
+let stage1 = relayStagingDir(params: relayParams, root: relayRoot)
+let stage2 = relayStagingDir(params: relayParams, root: relayRoot)
+expectEqual(stage1, stage2, "relayStagingDir: 同参数结果稳定")
+expectTrue(stage1.hasPrefix(relayRoot + "/big.iso-"), "relayStagingDir: 以源文件名开头")
+// 换目标机 → 目录必须变，避免两个任务写同一份暂存
+let stageOther = relayStagingDir(params: CopyParams(source: "user@192.168.1.5:/data/big.iso",
+                                                    target: "user@192.168.1.7:/data/dst",
+                                                    recursive: true, preserveAttrs: true,
+                                                    resume: true, hostSpec: ""),
+                                 root: relayRoot)
+expectTrue(stageOther != stage1, "relayStagingDir: 不同目标得到不同暂存目录")
+
+// 端口要透传到两段各自的 -e "ssh -p N"
+let relayPortCmd = buildRelayResumeCommand(params: CopyParams(
+        source: "user@192.168.1.5:2222:/data/x", target: "user@192.168.1.6:2200:/data/y",
+        recursive: true, preserveAttrs: true, resume: true, hostSpec: ""), root: relayRoot)
+expectTrue(relayPortCmd.contains("ssh -p 2222") || relayPortCmd.contains("-p 2222"), "relayResume: 源端口透传")
+expectTrue(relayPortCmd.contains("ssh -p 2200") || relayPortCmd.contains("-p 2200"), "relayResume: 目标端口透传")
+
+// 非法输入兜底
+expectEqual(buildRelayResumeCommand(params: CopyParams(source: "/local/a", target: "user@h:/b",
+                                                      recursive: true, preserveAttrs: true,
+                                                      resume: true, hostSpec: ""), root: relayRoot),
+            "", "relayResume: 非双远端返回空")
+
+
+// ============================================================
 // 17. buildCommandScript（Terminal 启动脚本：PATH 注入 / tty 精确关窗 / 语法校验）
 // ============================================================
 let script = buildCommandScript(cmdLine: "echo hi", pathPrepend: ["~/.bun/bin"], autoCloseOnSuccess: true)

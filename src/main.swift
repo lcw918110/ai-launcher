@@ -600,7 +600,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         let relayBtn = NSButton(title: "经本机中转", target: self, action: #selector(startRelayCopy(_:)))
         relayBtn.bezelStyle = .rounded
         relayBtn.controlSize = .small
-        relayBtn.toolTip = "服务器↔服务器直拷失败时用：tar 流经本机中转，不占本地磁盘、不依赖源机 rsync"
+        relayBtn.toolTip = "服务器↔服务器直拷失败时用。勾选「断点续传」走两段 rsync（源机→本机暂存→目标机，中断可续，占本地磁盘）；未勾选用 tar 流（不占盘、不可续传）"
         copyStatusLabel = NSTextField(labelWithString: "就绪")
         copyStatusLabel.font = NSFont.systemFont(ofSize: 11)
         copyStatusLabel.textColor = .secondaryLabelColor
@@ -1020,7 +1020,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         launchCommandInTerminal(fullCmd, autoCloseOnSuccess: true)
     }
 
-    // 服务器↔服务器直拷失败时的兜底：tar 流经本机中转（不依赖源机 rsync、不占本地磁盘）
+    // 服务器↔服务器直拷失败时的兜底：
+    // - 勾了「断点续传」且本机有 rsync → 两段式（源机 → 本机暂存 → 目标机），中断后重跑从断点继续
+    // - 否则 → tar 流经本机，不占本地磁盘、不依赖源机 rsync，但不能续传
     @objc func startRelayCopy(_ sender: Any) {
         let built = makeCopyParams()
         guard let params = built.params else {
@@ -1031,13 +1033,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             copyStatusLabel.stringValue = "「经本机中转」只用于服务器↔服务器（当前方向：\(built.direction)）"
             return
         }
+
+        if params.resume && hasRsync() {
+            let cmd = buildRelayResumeCommand(params: params)
+            if cmd.isEmpty {
+                copyStatusLabel.stringValue = "中转命令拼装失败，请检查两端路径"
+                return
+            }
+            let stage = relayStagingDir(params: params)
+            debugLog("[互拷] 续传中转命令: \(cmd)")
+            copyStatusLabel.stringValue = "续传式中转：源机 → 本机暂存 → 目标机（中断后再点一次即从断点继续）"
+            launchCommandInTerminal("echo '===== 开始中转（可续传）====='; echo '暂存目录: \(stage.replacingOccurrences(of: "'", with: "'\\''"))'; " + cmd,
+                                    autoCloseOnSuccess: true)
+            return
+        }
+
         let cmd = buildRelayCopyCommand(params: params)
         if cmd.isEmpty {
             copyStatusLabel.stringValue = "中转命令拼装失败，请检查两端路径"
             return
         }
         debugLog("[互拷] 中转命令: \(cmd)")
-        copyStatusLabel.stringValue = "中转中：源机 → 本机 → 目标机（tar 流，不占本地磁盘）"
+        copyStatusLabel.stringValue = params.resume
+            ? "中转中：源机 → 本机 → 目标机（tar 流；本机无 rsync，不能续传）"
+            : "中转中：源机 → 本机 → 目标机（tar 流，不占本地磁盘；勾选「断点续传」可改为可续传模式）"
         launchCommandInTerminal("echo '===== 开始中转拷贝 ====='; " + cmd, autoCloseOnSuccess: true)
     }
 

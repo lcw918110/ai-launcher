@@ -340,7 +340,7 @@ func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool)
         if !s.port.isEmpty {
             sshArgs += " -p \(s.port)"
         }
-        return sshArgs + " " + shellQuote(s.host) + " " + shellQuote(inner)
+        return sshArgs + " " + shellQuote(stripBrackets(s.host)) + " " + shellQuote(inner)
     }
 
     // 本机有 rsync：用 rsync（远端侧重写掉端口，端口走 -e "ssh -p N"）
@@ -455,6 +455,57 @@ func splitDirAndName(_ path: String) -> (dir: String, name: String) {
     let dir = idx == p.startIndex ? "/" : String(p[..<idx])
     let name = String(p[p.index(after: idx)...])
     return (dir, name.isEmpty ? "." : name)
+}
+
+// —— 可续传中转：源机 → 本机暂存 → 目标机（两段 rsync，中断后重跑从断点继续）——
+// 暂存根目录：跟随系统缓存目录，卸载应用可整目录清除
+func relayStagingRoot(home: String = NSHomeDirectory()) -> String {
+    home + "/Library/Caches/ai-launcher/relay"
+}
+
+// djb2 短哈希：同一对源/目标必须得到同一个暂存目录名，否则第二次运行无法续传
+func shortHash(_ s: String) -> String {
+    var h: UInt64 = 5381
+    for b in s.utf8 { h = (h &* 33) &+ UInt64(b) }
+    return String(h & 0xFFFFFFF, radix: 16)
+}
+
+// 暂存子目录：<源文件名>-<短哈希>，哈希由「源规格 + 目标规格」决定
+func relayStagingDir(params: CopyParams, root: String = relayStagingRoot()) -> String {
+    let name = splitDirAndName(splitRemoteSpec(params.source)?.path ?? "").name
+    let safe = String(name.map { ch -> Character in
+        if ch.isLetter || ch.isNumber || ch == "." || ch == "-" || ch == "_" { return ch }
+        return "_"
+    })
+    let dirName = (safe.isEmpty ? "relay" : safe) + "-" + shortHash(params.source + "|" + params.target)
+    return root + "/" + dirName
+}
+
+// 两段式中转命令：先拉到本机暂存（--partial 断点续传），再推到目标机，成功后清理暂存
+// 与 tar 流的区别：占用本地磁盘（约等于一份源数据），但中断可续、有大文件进度
+func buildRelayResumeCommand(params: CopyParams, root: String = relayStagingRoot()) -> String {
+    guard let s = splitRemoteSpec(params.source),
+          let t = splitRemoteSpec(params.target),
+          !s.path.isEmpty, !t.path.isEmpty else {
+        return ""
+    }
+    let stage = relayStagingDir(params: params, root: root)
+    let name = splitDirAndName(s.path).name
+    let recursiveFlag = params.recursive ? " -r" : ""
+    let preserveFlag = params.preserveAttrs ? " -a" : ""
+    // --partial-dir 把半截文件留在专属目录里，重跑时 rsync 以它为基底做增量，比 --append-verify 安全
+    let resumeFlags = params.resume ? " --partial --partial-dir=.rsync-partial" : ""
+    let flags = recursiveFlag + preserveFlag + resumeFlags + " --info=progress2"
+
+    func sshE(_ host: String, _ port: String) -> String {
+        port.isEmpty ? "" : " -e " + shellQuote("ssh -p \(port)")
+    }
+    let download = "rsync" + flags + sshE(s.host, s.port) + " " +
+        shellQuote(s.host + ":" + s.path) + " " + shellQuote(stage + "/")
+    let upload = "rsync" + flags + sshE(t.host, t.port) + " " +
+        shellQuote(stage + "/" + name) + " " + shellQuote(t.host + ":" + t.path)
+    return "mkdir -p " + shellQuote(stage) + " && " + download + " && " + upload +
+        " && echo '中转完成，清理本机暂存' && rm -rf " + shellQuote(stage)
 }
 
 // 服务器↔服务器直拷失败时的一键中转：本机 tar 流（不占本地磁盘、不依赖源机 rsync）
