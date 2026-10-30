@@ -440,7 +440,7 @@ expectEqual(buildRelayCopyCommand(params: CopyParams(
                 source: "user@192.168.1.5:/data/a", target: "user@192.168.1.6:/data/b",
                 recursive: true, preserveAttrs: true, resume: true, hostSpec: "")),
             "ssh 'user@192.168.1.5' 'tar -cf - -C '\\''/data'\\'' '\\''a'\\''' | ssh 'user@192.168.1.6' 'mkdir -p '\\''/data/b'\\'' && tar -xf - -C '\\''/data/b'\\'''",
-            "buildRelayCopyCommand: 双远端默认端口")
+            "buildRelayCopyCommand: 双远端默认端口（不同名时目标当容器，落 /data/b/a）")
 
 expectEqual(buildRelayCopyCommand(params: CopyParams(
                 source: "user@192.168.1.5:2222:/data/a", target: "user@192.168.1.6:2200:/data/b",
@@ -452,6 +452,27 @@ expectEqual(buildRelayCopyCommand(params: CopyParams(
                 source: "/local/a", target: "user@h:/data/b",
                 recursive: true, preserveAttrs: true, resume: true, hostSpec: "")),
             "", "buildRelayCopyCommand: 非双远端返回空")
+
+// 回归（真机验证时发现）：目标必须解到「父目录」，否则结果是 <目标>/<源名> 多嵌一层
+let tarCmd = buildRelayCopyCommand(params: CopyParams(
+        source: "user@h1:/srv/report", target: "user@h2:/backup/report",
+        recursive: true, preserveAttrs: true, resume: true, hostSpec: ""))
+expectTrue(tarCmd.contains("mkdir -p '\\''/backup'\\''"), "relayTar: mkdir 建的是目标父目录")
+expectTrue(!tarCmd.contains("/backup/report'"), "relayTar: 不再拿完整目标路径当解包目录（否则多一层）")
+// 单文件源同样落到目标父目录，不受影响
+let tarFileCmd = buildRelayCopyCommand(params: CopyParams(
+        source: "user@h1:/srv/big.iso", target: "user@h2:/backup/big.iso",
+        recursive: true, preserveAttrs: true, resume: true, hostSpec: ""))
+expectTrue(tarFileCmd.contains("tar -cf - -C '\\''/srv'\\'' '\\''big.iso'\\''"), "relayTar: 单文件打包父目录 + 文件名")
+expectTrue(tarFileCmd.contains("mkdir -p '\\''/backup'\\'' && tar -xf - -C '\\''/backup'\\''"),
+           "relayTar: 单文件解到目标父目录")
+
+// 目标末段与源名不同：目标当容器目录（否则会丢掉末段，/backup/2026 变成 /backup/report）
+let tarContainerCmd = buildRelayCopyCommand(params: CopyParams(
+        source: "user@h1:/srv/report", target: "user@h2:/backup/2026",
+        recursive: true, preserveAttrs: true, resume: true, hostSpec: ""))
+expectTrue(tarContainerCmd.contains("mkdir -p '\\''/backup/2026'\\''"),
+           "relayTar: 不同名时目标当容器（落 /backup/2026/report）")
 
 // ============================================================
 // 16b. 可续传中转（两段 rsync + 稳定暂存目录）
@@ -465,7 +486,9 @@ expectTrue(relayCmd.contains("--partial"), "relayResume: 带 --partial（断点�
 expectTrue(relayCmd.contains("--partial-dir=.rsync-partial"), "relayResume: 用 partial-dir 保留半截文件")
 expectTrue(!relayCmd.contains("--append-verify"), "relayResume: 不用 append-verify（目标被改短时会写坏）")
 expectTrue(relayCmd.hasPrefix("mkdir -p '"), "relayResume: 先建暂存目录")
-expectTrue(relayCmd.contains("user@192.168.1.6:/data/dst'"), "relayResume: 上传到目标路径")
+expectTrue(relayCmd.contains("'user@192.168.1.6:/data/dst/'"), "relayResume: 不同名时目标当容器（/data/dst/big.iso）")
+expectTrue(!relayCmd.contains("user@192.168.1.6:/data/dst'"), "relayResume: 不直接写完整目标路径（重复执行会套娃）")
+expectTrue(relayCmd.contains("--rsync-path="), "relayResume: 远端先建父目录（rsync 不建缺失父目录）")
 expectTrue(relayCmd.contains("rm -rf '"), "relayResume: 成功后清理暂存")
 // 两段 rsync 用 && 串起来，中断时后续步骤不执行，暂存保留 → 下次可续
 // 用 info 参数计数，不能数 "rsync" 子串（--partial-dir=.rsync-partial 里也有）
@@ -531,6 +554,132 @@ func zshSyntaxOK(_ content: String) -> Bool {
 }
 expectTrue(zshSyntaxOK(script), "buildCommandScript: 一次性脚本 zsh -n 语法通过")
 expectTrue(zshSyntaxOK(simpleScript), "buildCommandScript: 普通脚本 zsh -n 语法通过")
+
+// ============================================================
+// 17. dirLabel / sshConfigPath / fileModificationDate
+// ============================================================
+// dirLabel：启动网格按钮标题 = 目录最后一段
+expectEqual(dirLabel("/Users/me/project"), "project", "dirLabel: 常规绝对路径")
+expectEqual(dirLabel("/Users/me/project/"), "project", "dirLabel: 忽略尾部斜杠")
+expectEqual(dirLabel("/"), "/", "dirLabel: 根目录")
+expectEqual(dirLabel("relative/dir"), "dir", "dirLabel: 相对路径")
+expectEqual(dirLabel("/Users/me/中文项目"), "中文项目", "dirLabel: 中文目录名")
+expectEqual(dirLabel(""), "", "dirLabel: 空串不崩")
+
+// sshConfigPath：免密主机清单的固定来源
+expectEqual(sshConfigPath(), NSHomeDirectory() + "/.ssh/config", "sshConfigPath: 拼接正确")
+expectTrue(sshConfigPath().hasSuffix("/.ssh/config"), "sshConfigPath: 以 /.ssh/config 结尾")
+expectTrue(!sshConfigPath().contains("//"), "sshConfigPath: 不含双斜杠")
+
+// fileModificationDate：联想缓存靠它判断 ~/.ssh/config 是否被改过
+let mtimeProbe = NSTemporaryDirectory() + "ai-launcher-mtime-\(UUID().uuidString).txt"
+try? "x".write(toFile: mtimeProbe, atomically: true, encoding: .utf8)
+let probeDate = fileModificationDate(mtimeProbe)
+expectTrue(probeDate != nil, "fileModificationDate: 存在的文件能取到时间")
+expectTrue(abs(probeDate?.timeIntervalSinceNow ?? -99999) < 600, "fileModificationDate: 时间是当前附近")
+expectTrue(fileModificationDate(mtimeProbe + ".not-exist") == nil, "fileModificationDate: 不存在的文件返回 nil")
+try? FileManager.default.removeItem(atPath: mtimeProbe)
+
+// ============================================================
+// 18. remoteHostSepIndex（远端规格 host/path 边界，IPv6 关键路径）
+// ============================================================
+func sepSplit(_ p: String) -> String {
+    guard let idx = remoteHostSepIndex(p) else { return "<nil>" }
+    return String(p[..<idx]) + " | " + String(p[p.index(after: idx)...])
+}
+expectEqual(sepSplit("user@host:/data"), "user@host | /data", "remoteHostSepIndex: 普通远端路径")
+expectEqual(sepSplit("host:path"), "host | path", "remoteHostSepIndex: host:path")
+expectEqual(sepSplit("[::1]:/data"), "[::1] | /data", "remoteHostSepIndex: 方括号 IPv6 后的冒号才是边界")
+expectEqual(sepSplit("user@[::1]:/data"), "user@[::1] | /data", "remoteHostSepIndex: user + 方括号 IPv6")
+expectEqual(sepSplit("user@[::1]:2222:/data"), "user@[::1] | 2222:/data",
+            "remoteHostSepIndex: 方括号 + 端口时先切路径、端口留给 splitHostPort")
+expectEqual(sepSplit("::1"), "<nil>", "remoteHostSepIndex: 裸 IPv6 不误判为远端路径")
+expectEqual(sepSplit("[::1]/data"), "<nil>", "remoteHostSepIndex: 方括号后无冒号返回 nil")
+expectEqual(sepSplit("/Users/me/data"), "<nil>", "remoteHostSepIndex: 本地绝对路径无冒号")
+expectEqual(sepSplit("no-colon"), "<nil>", "remoteHostSepIndex: 无冒号返回 nil")
+
+// ============================================================
+// 19. shortHash / relayStagingRoot / relayStagingDir 边界
+// ============================================================
+// shortHash：暂存目录名的一部分，必须稳定，否则第二次运行接不上续传
+expectEqual(shortHash("same-input"), shortHash("same-input"), "shortHash: 同输入稳定")
+expectTrue(shortHash("a") != shortHash("b"), "shortHash: 不同输入不同")
+let hx = shortHash("user@a:/x|user@b:/y")
+expectTrue(!hx.isEmpty, "shortHash: 非空")
+expectTrue(hx.count <= 7, "shortHash: 最多 7 位十六进制")
+expectTrue(hx.allSatisfy { $0.isHexDigit }, "shortHash: 只含十六进制字符")
+expectTrue(!shortHash("").isEmpty, "shortHash: 空串也有值")
+
+// relayStagingRoot：跟随 home 的用户缓存目录，可整目录清除
+expectEqual(relayStagingRoot(home: "/Users/tester"),
+            "/Users/tester/Library/Caches/ai-launcher/relay",
+            "relayStagingRoot: 按 home 拼接")
+expectTrue(relayStagingRoot().hasSuffix("/Library/Caches/ai-launcher/relay"),
+           "relayStagingRoot: 缺省落在用户缓存目录")
+
+// 源是 / 时不能生成 .-xxxx 的隐藏目录
+let rootSrcParams = CopyParams(source: "user@a:/", target: "user@b:/dst",
+                               recursive: true, preserveAttrs: true, resume: true, hostSpec: "")
+let rootSrcDir = relayStagingDir(params: rootSrcParams, root: "/tmp/relay-root")
+expectTrue(rootSrcDir.hasPrefix("/tmp/relay-root/relay-"), "relayStagingDir: 根路径回落 relay- 前缀")
+expectTrue(!rootSrcDir.contains("/."), "relayStagingDir: 不以点开头（Finder 里可见）")
+
+// 源名含空格时替换成安全字符，避免暂存路径带空格
+let spacedParams = CopyParams(source: "user@a:/data/my dir", target: "user@b:/dst",
+                              recursive: true, preserveAttrs: true, resume: true, hostSpec: "")
+let spaced = relayStagingDir(params: spacedParams, root: "/tmp/relay-root")
+expectTrue(spaced.contains("/my_dir-"), "relayStagingDir: 空格替换为下划线")
+expectTrue(!spaced.contains(" "), "relayStagingDir: 目录名不含空格")
+expectEqual(relayStagingDir(params: spacedParams, root: "/tmp/relay-root"), spaced,
+            "relayStagingDir: 含空格时仍稳定（续传前提）")
+
+// ============================================================
+// 20. 环境探测与日志：hasRsync / debugLog
+// ============================================================
+// hasRsync 与 shell 的判断必须一致：UI 靠它决定 rsync / scp / 续传式中转
+let shellHasRsync = { () -> Bool in
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    p.arguments = ["-c", "command -v rsync >/dev/null 2>&1"]
+    p.standardOutput = FileHandle.nullDevice
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return false }
+    p.waitUntilExit()
+    return p.terminationStatus == 0
+}()
+expectEqual(hasRsync(), shellHasRsync, "hasRsync: 与 shell 探测结果一致")
+
+// debugLog 是排障唯一入口，必须追加而不是覆盖
+let logMarker = "debugLog-test-\(UUID().uuidString)"
+debugLog(logMarker)
+debugLog(logMarker)
+let logText = (try? String(contentsOfFile: "/tmp/ai-launcher-debug.log", encoding: .utf8)) ?? ""
+expectTrue(logText.contains(logMarker), "debugLog: 写入内容可在日志中找到")
+expectEqual(logText.components(separatedBy: logMarker).count - 1, 2, "debugLog: 两次调用都追加（不覆盖）")
+
+// ============================================================
+// 21. 补充边界：IPv6 远端判定 / parseConnection 容错 / 本地拷贝降级
+// ============================================================
+expectTrue(isRemotePath("user@[::1]:/data"), "isRemotePath: user@[::1]:path")
+expectTrue(isRemotePath("[::1]:/data"), "isRemotePath: [::1]:path")
+expectTrue(!isRemotePath("::1"), "isRemotePath: 裸 IPv6 不误判")
+expectTrue(!isRemotePath("~/data"), "isRemotePath: ~ 相对路径算本地")
+expectTrue(!isRemotePath("/Users/me/a:b"), "isRemotePath: 本地路径含冒号仍是本地")
+
+// parseConnection 容错：空串 / 只有前缀 / 尾部斜杠
+let emptyConn = parseConnection("   ")
+expectTrue(emptyConn.host.isEmpty && emptyConn.user.isEmpty && emptyConn.password.isEmpty,
+           "parseConnection: 空串返回空连接")
+let prefixOnly = parseConnection("ssh://")
+expectTrue(prefixOnly.host.isEmpty, "parseConnection: 只有 ssh:// 不崩且 host 为空")
+let trailingSlash = parseConnection("user@host:2222/")
+expectEqual(trailingSlash.host, "host", "parseConnection: 尾部斜杠先剥掉再解析")
+expectEqual(trailingSlash.port, "2222", "parseConnection: 尾部斜杠不影响端口")
+
+// 本地→本地且无 rsync：降级 scp 也要带 -r/-p（scp 无断点续传，故不出现 partial 参数）
+expectEqual(cmd("/Users/me/a", "/Users/me/b", rsync: false),
+            "scp -r -p '/Users/me/a' '/Users/me/b'",
+            "buildCopyCommand: 本地拷贝无 rsync 降级 scp")
 
 // ============================================================
 // 汇总

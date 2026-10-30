@@ -477,7 +477,9 @@ func relayStagingDir(params: CopyParams, root: String = relayStagingRoot()) -> S
         if ch.isLetter || ch.isNumber || ch == "." || ch == "-" || ch == "_" { return ch }
         return "_"
     })
-    let dirName = (safe.isEmpty ? "relay" : safe) + "-" + shortHash(params.source + "|" + params.target)
+    // 源是 / 或 . 时 splitDirAndName 会给 "."，若不处理会生成以点开头的隐藏目录（Finder 里看不见）
+    let meaningful = safe.replacingOccurrences(of: ".", with: "")
+    let dirName = (meaningful.isEmpty ? "relay" : safe) + "-" + shortHash(params.source + "|" + params.target)
     return root + "/" + dirName
 }
 
@@ -500,10 +502,18 @@ func buildRelayResumeCommand(params: CopyParams, root: String = relayStagingRoot
     func sshE(_ host: String, _ port: String) -> String {
         port.isEmpty ? "" : " -e " + shellQuote("ssh -p \(port)")
     }
+    let (tdir, tname) = splitDirAndName(t.path)
+    // 目标目录的取法与 tar 流一致：同名时目标就是最终路径（用其父目录），不同名时目标当容器
+    let targetBase = (tname == name) ? tdir : t.path
+    let tdst = targetBase.hasSuffix("/") ? targetBase : targetBase + "/"
     let download = "rsync" + flags + sshE(s.host, s.port) + " " +
         shellQuote(s.host + ":" + s.path) + " " + shellQuote(stage + "/")
-    let upload = "rsync" + flags + sshE(t.host, t.port) + " " +
-        shellQuote(stage + "/" + name) + " " + shellQuote(t.host + ":" + t.path)
+    // 目标写成「目录/」：落点是 <目标>/<源名>，重复执行只做同步、不会套娃。
+    // --rsync-path 让远端先建目录 —— rsync 自己不会创建缺失的目录（否则报 mkdir failed）
+    let rsyncPath = "mkdir -p " + shellQuote(targetBase) + " && rsync"
+    let upload = "rsync" + flags + sshE(t.host, t.port) +
+        " --rsync-path=" + shellQuote(rsyncPath) + " " +
+        shellQuote(stage + "/" + name) + " " + shellQuote(t.host + ":" + tdst)
     return "mkdir -p " + shellQuote(stage) + " && " + download + " && " + upload +
         " && echo '中转完成，清理本机暂存' && rm -rf " + shellQuote(stage)
 }
@@ -517,12 +527,18 @@ func buildRelayCopyCommand(params: CopyParams) -> String {
         return ""
     }
     let (sdir, sname) = splitDirAndName(s.path)
+    // tar 打包「源父目录 + 源条目」，解包目录按目标末段是否与源同名决定：
+    //   同名（/data/report → /backup/report）：解到目标父目录，结果就是目标路径本身；
+    //   不同名（/data/report → /backup）：目标当容器目录，解到目标里，结果是 /backup/report。
+    // 两种情况都幂等，重复执行不会套娃成 …/report/report。
+    let (tdir, tname) = splitDirAndName(t.path)
+    let unpackDir = (tname == sname) ? tdir : t.path
     var srcSSH = "ssh"
     if !s.port.isEmpty { srcSSH += " -p \(s.port)" }
     var dstSSH = "ssh"
     if !t.port.isEmpty { dstSSH += " -p \(t.port)" }
     let srcCmd = "tar -cf - -C " + shellQuote(sdir) + " " + shellQuote(sname)
-    let dstCmd = "mkdir -p " + shellQuote(t.path) + " && tar -xf - -C " + shellQuote(t.path)
+    let dstCmd = "mkdir -p " + shellQuote(unpackDir) + " && tar -xf - -C " + shellQuote(unpackDir)
     return srcSSH + " " + shellQuote(stripBrackets(s.host)) + " " + shellQuote(srcCmd) +
         " | " + dstSSH + " " + shellQuote(stripBrackets(t.host)) + " " + shellQuote(dstCmd)
 }

@@ -41,10 +41,10 @@ chmod +x scripts/build.sh
 |------|------|
 | `src/Core.swift` | 纯逻辑层（仅 Foundation）：连接串解析、路径/主机拆分、互拷命令拼装、配置读写、`~/.ssh/config` 解析、Terminal 启动脚本生成 |
 | `src/main.swift` | UI 层（AppKit）：窗口与滚动视图、按钮、弹窗、联想候选框、Terminal 启动 |
-| `tests/main.swift` | Core 全量断言用例（195 条，纯命令行，无 GUI 副作用） |
+| `tests/main.swift` | Core 全量断言用例（249 条，纯命令行，无 GUI 副作用） |
 | `scripts/build.sh` / `scripts/test.sh` | 编译安装 / 跑测试 |
 | `.github/workflows/ci.yml` | CI：编译 + 跑测试 |
-| `LICENSE` / `CHANGELOG.md` | MIT 许可 / 版本改动记录（当前 0.4.1） |
+| `LICENSE` / `CHANGELOG.md` | MIT 许可 / 版本改动记录（当前 0.4.2） |
 
 ## 测试
 
@@ -52,7 +52,7 @@ chmod +x scripts/build.sh
 ./scripts/test.sh
 ```
 
-覆盖连接串全格式（含 `IP:端口` 回归）、命令拼装（含自定义端口 `-e "ssh -p N"`、tar 中转与可续传中转）、启动脚本（含 `zsh -n` 语法校验与按 tty 关窗）、远端路径导航、IPv6、`pathPrepend`、填充决策、配置读写、免密主机解析等 195 条断言，失败返回非 0，可直接进 CI。
+覆盖连接串全格式（含 `IP:端口` 回归）、命令拼装（含自定义端口 `-e "ssh -p N"`、tar 中转与可续传中转）、启动脚本（含 `zsh -n` 语法校验与按 tty 关窗）、远端路径导航、IPv6、`pathPrepend`、填充决策、配置读写、免密主机解析等 249 条断言，失败返回非 0，可直接进 CI。
 
 GUI 冒烟（可选；加 `--no-launch` 不会弹 Terminal）：
 

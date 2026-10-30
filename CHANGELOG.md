@@ -3,6 +3,18 @@
 版本号遵循「主版本.次版本.修订号」，1.0 之前每次成批改动升次版本号。安装包版本以 `src/Info.plist` 的
 `CFBundleShortVersionString` 为准，构建脚本原样拷入 `.app`。
 
+## 0.4.2 — 2026-10-30
+
+测试补全 + 真实链路验证发现的两个中转 bug。
+
+- **修续传式中转目标目录不存在就失败**：`rsync` 不会创建缺失的父目录，实测报 `mkdir "/tmp/dst2/data" failed: No such file or directory`。改为 `--rsync-path='mkdir -p <目标目录> && rsync'`，目标参数带尾斜杠。
+- **统一两种中转的落点规则**（tar 流与续传式之前不一致）：
+  - 目标末段与源名相同（`/data/report` → `/backup/report`）：结果就是 `/backup/report`
+  - 末段不同名（`/data/report` → `/backup`）：目标当容器，结果 `/backup/report`
+  - 两条路径都幂等，重复执行只同步，不会套娃成 `report/report`
+- **测试 195 → 249 条**：补齐此前没断言的 8 个 Core 函数（`dirLabel`、`sshConfigPath`、`fileModificationDate`、`remoteHostSepIndex`、`shortHash`、`relayStagingRoot`、`relayStagingDir` 边界、`hasRsync`、`debugLog`），并新增落点规则的回归断言。
+- **顺带**：`relayStagingDir` 源为 `/` 时不再生成 `.-<哈希>` 的隐藏暂存目录。
+
 ## 0.4.1 — 2026-10-30
 
 中转可断点续传（G-15）。
