@@ -25,6 +25,26 @@ chmod +x scripts/build.sh
 
 把 [config.example.json](config.example.json) 拷到该路径后按自己的目录与主机改，不要把真实配置提交进本仓。
 
+## 装到别人的机器上
+
+本仓没有 Apple 开发者证书，产物是 ad-hoc 签名。**直接双击下载的 `.app` 会被 Gatekeeper 拦**（旧版本还会报「已损坏」），按下面任一种方式装则没有任何提示：
+
+```bash
+# 方式一：命令行安装（推荐）
+curl -fsSL https://raw.githubusercontent.com/lcw918110/ai-launcher/main/scripts/install-remote.sh | zsh
+
+# 方式二：手动装 DMG 后清隔离标记
+xattr -dr com.apple.quarantine "/Applications/AI终端启动器.app"
+```
+
+自己打包分发：
+
+```bash
+./scripts/package.sh        # → dist/AI终端启动器-<版本>.dmg / .zip / SHA256SUMS.txt
+```
+
+产物是 universal（arm64 + x86_64）。推 `v*` 标签时 GitHub Actions 会自动构建并挂到 Release。原理、签名升级到 Developer ID、公证步骤与排障见 [docs/08-分发与安装.md](docs/08-分发与安装.md)。
+
 ## 日常使用
 
 1. 打开「AI终端启动器」，窗口里每个目录一行，点 CLI 名称即在该目录启动。项目多时窗口可滚动、可拉伸。
@@ -45,8 +65,10 @@ chmod +x scripts/build.sh
 | `src/main.swift` | UI 层（AppKit）：窗口与滚动视图、按钮、弹窗、联想候选框、Terminal 启动 |
 | `tests/main.swift` | Core 全量断言用例（311 条，纯命令行，无 GUI 副作用） |
 | `scripts/build.sh` / `scripts/test.sh` | 编译安装 / 跑测试 |
-| `.github/workflows/ci.yml` | CI：编译 + 跑测试 |
-| `LICENSE` / `CHANGELOG.md` | MIT 许可 / 版本改动记录（当前 0.4.4） |
+| `scripts/package.sh` / `scripts/sign-app.sh` | 打 DMG 与 zip（universal）/ 给 `.app` 签名（Developer ID 或 ad-hoc） |
+| `scripts/install-remote.sh` | 给他人用的一键安装（下载 → 装 → 清 quarantine） |
+| `.github/workflows/ci.yml` / `release.yml` | CI：编译 + 跑测试 / 推 tag 自动打包发布 |
+| `LICENSE` / `CHANGELOG.md` | MIT 许可 / 版本改动记录（当前 0.4.5） |
 
 ## 测试
 

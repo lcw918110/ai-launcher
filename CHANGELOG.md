@@ -3,6 +3,30 @@
 版本号遵循「主版本.次版本.修订号」，1.0 之前每次成批改动升次版本号。安装包版本以 `src/Info.plist` 的
 `CFBundleShortVersionString` 为准，构建脚本原样拷入 `.app`。
 
+## 0.4.5 — 2026-10-31
+
+修掉「从 GitHub 下载后提示已损坏」的分发问题，并补上完整的打包与安装链路。
+
+- **根因**：arm64 上链接器自动打的 ad-hoc 签名声明了「bundle 应带 `_CodeSignature/CodeResources`」，而手工组装的 `.app` 没有这个文件，`codesign` 报 `code has no resources but signature indicates they must be present`，Gatekeeper 据此判定「已损坏，应移到废纸篓」，且无法绕过。
+- **修法**：新增 `scripts/sign-app.sh`，每次构建后给 bundle 补签名并立即 `codesign --verify --deep --strict` 校验，失败即中止构建。
+  - 有 `Developer ID Application` 证书（或 `DEVELOPER_ID` 环境变量）时真签名，带 `--options runtime --timestamp`，可继续公证；
+  - 无证书时 ad-hoc（`--sign -`），把「已损坏」变成可放行的「无法验证开发者」；
+  - `--require-dev-id` 让缺证书时直接失败，防止 CI 里悄悄降级。
+- **打包** `scripts/package.sh`：universal 编译（`arm64` + `x86_64` 各自编译后 `lipo`），产出 DMG（含 Applications 软链、`首次打开说明.txt`、`安装到应用程序文件夹.command`）、zip 与 `SHA256SUMS.txt`，全部落在 `dist/`。
+  - 每次从干净目录组装：残留的 `Applications` 是符号链接，`ln -s` 会跟随进入真实 `/Applications`（实测踩到，已在脚本里规避）。
+  - 有 Developer ID 时给 DMG 也签名，便于 `notarytool` + `stapler`。
+- **一键安装** `scripts/install-remote.sh`：`curl | zsh`，下载 DMG → 挂载 → 拷到 `/Applications` → 清 `com.apple.quarantine` → 校验签名 → 打开。`curl` 不经过 LaunchServices 本就不打标记，装出来的应用双击即开、零提示。
+  - 支持 `AI_LAUNCHER_VERSION` / `AI_LAUNCHER_MIRROR` / `AI_LAUNCHER_DEST_DIR` / `AI_LAUNCHER_NO_OPEN`（内网镜像、批量部署）。
+  - `/Applications` 不可写时自动退到 `~/Applications`。
+- **自动发布** `.github/workflows/release.yml`：推 `v*` 标签先跑测试，再打包并上传 `ai-launcher-<版本>.dmg`、`ai-launcher-latest.dmg`、`ai-launcher-<版本>.zip`、`SHA256SUMS.txt`（ASCII 名便于 URL 引用）。`ci.yml` 改为只跑分支，避免 tag 重复执行。
+- **实测**（macOS 26.6.2）：
+  - 两包同样打上 quarantine，旧包 `codesign --verify` 报 `code has no resources…`、`spctl` 同样报错；新包 `codesign --verify` 通过、`spctl` 仅 `rejected`；
+  - 清标记后二进制可直接执行（`--selftest` 退出码 0）；
+  - `lipo -archs` 为 `x86_64 arm64`；
+  - 一键安装三种路径实跑：latest 安装、指定版本安装、不存在版本报错退出 1，装完 `xattr -p` 确认无 quarantine、签名校验通过；
+  - DMG 内 `.command` 在模拟 quarantine 场景下安装成功并清除标记。
+- **文档**：新增 [docs/08-分发与安装.md](docs/08-分发与安装.md)（原理、三种分发方式、打包、签名升级路径、公证步骤、排障表）。
+
 ## 0.4.4 — 2026-10-30
 
 续传的配套三件事：断了能接上（记住上次任务）、断了能复盘（日志落盘）、别把专线打满（限速）。

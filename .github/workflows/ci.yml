@@ -1,7 +1,10 @@
 name: CI
 
 on:
+  # 只在分支上跑；tag 由 release.yml 负责（它内部也会先跑测试）
   push:
+    branches:
+      - '**'
   pull_request:
 
 jobs:

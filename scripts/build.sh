@@ -27,6 +27,11 @@ cp "$PLIST_SRC" "$PLIST_DST"
 swiftc -O "$CORE" "$SRC" -o "$BIN"
 chmod +x "$BIN"
 
+# 每次覆盖二进制后旧签名即失效，必须重签。
+# 无 Developer ID 证书时走 ad-hoc：不做这一步，bundle 签名与 linker 自动签名不一致，
+# 从网上下载后 Gatekeeper 会报「已损坏」而不是可绕过的「无法验证开发者」。
+"$ROOT/scripts/sign-app.sh" "$APP"
+
 # 精确匹配进程名再杀，避免误杀路径里恰好包含该字样的无关进程
 for name in "$APP_NAME" "$LEGACY_NAME"; do
   if pgrep -x "$name" >/dev/null 2>&1; then

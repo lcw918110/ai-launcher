@@ -1,0 +1,73 @@
+name: Release
+
+# 推送 v* 标签时自动构建分发包并挂到 Release。
+# 产物是 ad-hoc 签名（仓库里没有开发者证书），安装方式见 Release 说明与 docs/08。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 先过测试
+        run: |
+          chmod +x scripts/test.sh
+          ./scripts/test.sh
+
+      - name: 构建 universal 包并签名
+        run: |
+          chmod +x scripts/package.sh scripts/sign-app.sh
+          ./scripts/package.sh
+
+      - name: 准备 Release 资产
+        id: prep
+        run: |
+          set -e
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' src/Info.plist)"
+          OUT="$RUNNER_TEMP/assets"
+          mkdir -p "$OUT"
+          # 中文名留给本地，Release 资产用 ASCII，URL 引用才不用百分号转义
+          cp "dist/AI终端启动器-$VERSION.dmg" "$OUT/ai-launcher-$VERSION.dmg"
+          cp "dist/AI终端启动器-$VERSION.dmg" "$OUT/ai-launcher-latest.dmg"
+          cp "dist/AI终端启动器-$VERSION.zip" "$OUT/ai-launcher-$VERSION.zip"
+          ( cd "$OUT" && shasum -a 256 *.dmg *.zip > SHA256SUMS.txt )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+          cat "$OUT/SHA256SUMS.txt"
+
+      - name: 发布
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.prep.outputs.out }}/*
+          generate_release_notes: true
+          body: |
+            ## 安装
+
+            本包未经 Apple 公证（个人开源项目，无开发者账号），直接双击会被 Gatekeeper 拦。
+            下面两种方式装完都能直接打开，没有提示：
+
+            **方式一：命令行（推荐）**
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/lcw918110/ai-launcher/main/scripts/install-remote.sh | zsh
+            ```
+
+            **方式二：手动装 DMG**
+            双击 `ai-launcher-${{ steps.prep.outputs.version }}.dmg`，把应用拖进「应用程序」，然后在终端执行：
+            ```sh
+            xattr -dr com.apple.quarantine "/Applications/AI终端启动器.app"
+            ```
+
+            如果已经看到提示：
+            - 「已损坏，应移到废纸篓」→ 下载的是旧版未签名包，换本页的 DMG
+            - 「无法验证开发者」→ 去「系统设置 → 隐私与安全性」点「仍要打开」（macOS 15 起右键打开不再能绕过）
+
+            ## 校验
+
+            见 `SHA256SUMS.txt`，`shasum -a 256 -c SHA256SUMS.txt` 可复核。
