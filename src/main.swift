@@ -20,14 +20,18 @@ func launchInTerminal(dir: String, tool: ToolConfig) {
 
 // 通用：把任意命令行写入临时 .command 文件，open 到 Terminal 执行（免授权、真 TTY 可交互输密码）
 // autoCloseOnSuccess：命令退出码为 0 时，短暂展示完成提示后自动关闭 Terminal 窗口（用于拷贝等一次性任务）
-func launchCommandInTerminal(_ cmdLine: String, autoCloseOnSuccess: Bool = false) {
-    debugLog("launchCommandInTerminal cmd=\(cmdLine) autoClose=\(autoCloseOnSuccess)")
+// logPath：非空时把「开始/结束 + 退出码」写进日志（rsync 明细由 --log-file 写同一个文件）
+func launchCommandInTerminal(_ cmdLine: String, autoCloseOnSuccess: Bool = false,
+                             logPath: String = "", startNote: String = "") {
+    debugLog("launchCommandInTerminal cmd=\(cmdLine) autoClose=\(autoCloseOnSuccess) log=\(logPath)")
     let pathPrepend = loadPathPrepend()
     debugLog("启动脚本 PATH 前缀: \(pathPrepend.joined(separator: ":"))")
     // 脚本内容由 Core 的纯函数生成（可测、可用 zsh -n 校验）
     let content = buildCommandScript(cmdLine: cmdLine,
                                      pathPrepend: pathPrepend,
-                                     autoCloseOnSuccess: autoCloseOnSuccess)
+                                     autoCloseOnSuccess: autoCloseOnSuccess,
+                                     logPath: logPath,
+                                     startNote: startNote)
     let path = (NSTemporaryDirectory() as NSString)
         .appendingPathComponent("ai-launcher-\(UUID().uuidString).command")
     try? content.write(toFile: path, atomically: true, encoding: .utf8)
@@ -194,6 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var copyRecursiveCheck: NSButton!
     var copyPreserveCheck: NSButton!
     var copyResumeCheck: NSButton!
+    var copyBwlimitField: NSTextField!   // 限速（MB/s，空 = 不限速）
     var copyStatusLabel: NSTextField!
     var copyPresetPopup: NSPopUpButton!   // 互拷预设（config 的 copy.hosts）
     var copyHosts: [CopyHostConfig] = []
@@ -211,6 +216,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         ensureConfigExists()
         setupMainMenu()
         buildWindow()
+        // 自测要的是干净的表单，回填会干扰断言
+        if !gSelfTest { restoreLastCopyIfEmpty() }
         if gSelfTest {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 self?.runSelfTest()
@@ -264,6 +271,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         debugLog("[自测] 互拷密码输入框存在 = \(copyPassField != nil)")
         debugLog("[自测] 互拷主机输入框存在 = \(copyHostField != nil)")
         debugLog("[自测] 互拷端口输入框存在 = \(copyPortField != nil)")
+        debugLog("[自测] 互拷限速输入框存在 = \(copyBwlimitField != nil)")
+        debugLog("[自测] 上次任务记录存在 = \(loadCopyMemory() != nil) 日志目录 = \(copyLogRoot())")
         debugLog("[自测] 互拷开始按钮状态标签存在 = \(copyStatusLabel != nil)")
         debugLog("[自测] 窗口内容在滚动视图内 = \(window?.contentView is NSScrollView) 可缩放 = \(window?.styleMask.contains(.resizable) ?? false)")
         debugLog("[自测] 配置 PATH 前缀 = \(loadPathPrepend().joined(separator: ":"))")
@@ -588,6 +597,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         optRow.addView(copyRecursiveCheck, in: .leading)
         optRow.addView(copyPreserveCheck, in: .leading)
         optRow.addView(copyResumeCheck, in: .leading)
+        // 限速：留空表示不限速；输入 MB/s（可带小数），传给 rsync 时换算成 KiB/s
+        let limitLabel = NSTextField(labelWithString: "限速")
+        limitLabel.font = NSFont.systemFont(ofSize: 11)
+        limitLabel.textColor = .secondaryLabelColor
+        copyBwlimitField = NSTextField(string: "")
+        copyBwlimitField.placeholderString = "不限"
+        copyBwlimitField.controlSize = .small
+        copyBwlimitField.toolTip = "MB/s，留空不限制；避免大文件占满专线。scp 降级时也生效，tar 流中转不生效"
+        copyBwlimitField.widthAnchor.constraint(equalToConstant: 52).isActive = true
+        let limitUnit = NSTextField(labelWithString: "MB/s")
+        limitUnit.font = NSFont.systemFont(ofSize: 11)
+        limitUnit.textColor = .secondaryLabelColor
+        optRow.addView(limitLabel, in: .leading)
+        optRow.addView(copyBwlimitField, in: .leading)
+        optRow.addView(limitUnit, in: .leading)
         stack.addView(optRow, in: .leading)
 
         // 开始按钮 + 状态
@@ -972,13 +996,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         }
 
         let direction = deriveDirection(src: src, dst: dst)
+        // 限速：留空/0 = 不限速；非数字要明确报错，不能静默当成不限速（用户以为限了其实没限）
+        let bwText = copyBwlimitField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let bwKbps = parseBwlimitMBps(bwText) else {
+            return (nil, "", "限速只接受数字（MB/s，可带小数），留空表示不限速；当前填的是「\(bwText)」")
+        }
         let params = CopyParams(
             source: src,
             target: dst,
             recursive: copyRecursiveCheck.state == .on,
             preserveAttrs: copyPreserveCheck.state == .on,
             resume: copyResumeCheck.state == .on,
-            hostSpec: connSpec
+            hostSpec: connSpec,
+            bwlimitKbps: bwKbps
         )
         return (params, direction, nil)
     }
@@ -994,12 +1024,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
 
         // 本机是否有 rsync 一次性探测（结果同时用于命令拼装与降级提示）
         let rsyncOK = hasRsync()
-        let cmd = buildCopyCommand(cfg: cfg, params: params, rsyncAvailable: rsyncOK)
+        // 日志落点按「源 + 目标」哈希固定：续传的多次运行会追加到同一个文件，事后能连起来看
+        let logPath = copyLogPath(params: params)
+        let cmd = buildCopyCommand(cfg: cfg, params: params, rsyncAvailable: rsyncOK, logPath: logPath)
         if cmd.isEmpty {
             copyStatusLabel.stringValue = "无法拼接命令，请检查路径格式"
             return
         }
         debugLog("[互拷] 方向=\(direction) 拼装命令: \(cmd)")
+        rememberCurrentCopy(params: params)
 
         // 状态提示
         switch direction {
@@ -1014,10 +1047,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         if !rsyncOK && direction != "local" && direction != "direct" {
             copyStatusLabel.stringValue += "（本机无 rsync，已降级 scp，断点续传不可用）"
         }
+        copyStatusLabel.stringValue += " 日志：\((logPath as NSString).lastPathComponent)"
 
         // 普通执行（非 exec），前后 echo 提示，保留进度与完成提示
         let fullCmd = "echo '===== 开始拷贝 ====='; " + cmd
-        launchCommandInTerminal(fullCmd, autoCloseOnSuccess: true)
+        launchCommandInTerminal(fullCmd, autoCloseOnSuccess: true,
+                                logPath: logPath, startNote: "\(params.source) → \(params.target)")
+    }
+
+    // 记住这次任务：续传要求「源/目标不变、再点一次」，app 重启后要能自动回填
+    func rememberCurrentCopy(params: CopyParams) {
+        let mem = CopyMemory(source: params.source,
+                             target: params.target,
+                             recursive: params.recursive,
+                             preserveAttrs: params.preserveAttrs,
+                             resume: params.resume,
+                             bwlimitMBps: copyBwlimitField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+        saveCopyMemory(mem)
     }
 
     // 服务器↔服务器直拷失败时的兜底：
@@ -1033,9 +1079,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             copyStatusLabel.stringValue = "「经本机中转」只用于服务器↔服务器（当前方向：\(built.direction)）"
             return
         }
+        let logPath = copyLogPath(params: params)
+        let note = "\(params.source) → \(params.target)"
+        rememberCurrentCopy(params: params)
 
         if params.resume && hasRsync() {
-            let cmd = buildRelayResumeCommand(params: params)
+            let cmd = buildRelayResumeCommand(params: params, logPath: logPath)
             if cmd.isEmpty {
                 copyStatusLabel.stringValue = "中转命令拼装失败，请检查两端路径"
                 return
@@ -1044,7 +1093,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             debugLog("[互拷] 续传中转命令: \(cmd)")
             copyStatusLabel.stringValue = "续传式中转：源机 → 本机暂存 → 目标机（中断后再点一次即从断点继续）"
             launchCommandInTerminal("echo '===== 开始中转（可续传）====='; echo '暂存目录: \(stage.replacingOccurrences(of: "'", with: "'\\''"))'; " + cmd,
-                                    autoCloseOnSuccess: true)
+                                    autoCloseOnSuccess: true, logPath: logPath, startNote: note)
             return
         }
 
@@ -1057,7 +1106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         copyStatusLabel.stringValue = params.resume
             ? "中转中：源机 → 本机 → 目标机（tar 流；本机无 rsync，不能续传）"
             : "中转中：源机 → 本机 → 目标机（tar 流，不占本地磁盘；勾选「断点续传」可改为可续传模式）"
-        launchCommandInTerminal("echo '===== 开始中转拷贝 ====='; " + cmd, autoCloseOnSuccess: true)
+        // tar 流没有 --log-file，日志里只有开始/结束与退出码，明细仍在 Terminal 里
+        launchCommandInTerminal("echo '===== 开始中转拷贝 ====='; " + cmd, autoCloseOnSuccess: true,
+                                logPath: logPath, startNote: note)
     }
 
     @objc func launchTool(_ sender: NSButton) {
@@ -1084,6 +1135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         var source: String; var target: String; var conn: String
         var user: String; var pass: String; var host: String; var port: String
         var recursive: Bool; var preserve: Bool; var resume: Bool
+        var bwlimit: String
     }
 
     func captureCopyForm() -> CopyFormState {
@@ -1093,7 +1145,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
                       port: copyPortField.stringValue,
                       recursive: copyRecursiveCheck.state == .on,
                       preserve: copyPreserveCheck.state == .on,
-                      resume: copyResumeCheck.state == .on)
+                      resume: copyResumeCheck.state == .on,
+                      bwlimit: copyBwlimitField.stringValue)
     }
 
     func restoreCopyForm(_ s: CopyFormState) {
@@ -1107,6 +1160,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         copyRecursiveCheck.state = s.recursive ? .on : .off
         copyPreserveCheck.state = s.preserve ? .on : .off
         copyResumeCheck.state = s.resume ? .on : .off
+        copyBwlimitField.stringValue = s.bwlimit
+    }
+
+    // 启动时回填上次任务：续传要求源/目标不变再点一次，重启后表单若是空的就等于续不上。
+    // 只在源和目标都为空时回填，避免覆盖用户刚输入的内容。
+    func restoreLastCopyIfEmpty() {
+        let srcEmpty = copySourceField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let dstEmpty = copyTargetField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard srcEmpty && dstEmpty, let m = loadCopyMemory() else { return }
+        copySourceField.stringValue = m.source
+        copyTargetField.stringValue = m.target
+        copyRecursiveCheck.state = m.recursive ? .on : .off
+        copyPreserveCheck.state = m.preserveAttrs ? .on : .off
+        copyResumeCheck.state = m.resume ? .on : .off
+        copyBwlimitField.stringValue = m.bwlimitMBps
+        copyStatusLabel.stringValue = "已回填上次任务：再点「开始拷贝」即从断点继续（日志在 ~/Library/Logs/ai-launcher）"
+        debugLog("[互拷] 回填上次任务: \(m.source) → \(m.target)")
     }
 
     @objc func refresh(_ sender: Any) {

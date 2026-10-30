@@ -701,6 +701,134 @@ expectEqual(cmd("/Users/me/a", "/Users/me/b", rsync: false),
             "buildCopyCommand: 本地拷贝无 rsync 降级 scp")
 
 // ============================================================
+// 18. 限速（--bwlimit / scp -l）
+// ============================================================
+expectEqual(parseBwlimitMBps(""), 0, "bwlimit: 空串 = 不限速")
+expectEqual(parseBwlimitMBps("   "), 0, "bwlimit: 全空格 = 不限速")
+expectEqual(parseBwlimitMBps("10"), 10240, "bwlimit: 10 MB/s → 10240 KiB/s")
+expectEqual(parseBwlimitMBps("0.5"), 512, "bwlimit: 支持小数（0.5 MB/s）")
+expectEqual(parseBwlimitMBps("0"), 0, "bwlimit: 0 = 不限速")
+expectEqual(parseBwlimitMBps(" 20 "), 20480, "bwlimit: 忽略首尾空格")
+expectTrue(parseBwlimitMBps("abc") == nil, "bwlimit: 非数字返回 nil（不能静默当不限速）")
+expectTrue(parseBwlimitMBps("-1") == nil, "bwlimit: 负数返回 nil")
+expectTrue(parseBwlimitMBps("1.2.3") == nil, "bwlimit: 多个小数点返回 nil")
+expectTrue(parseBwlimitMBps("1e3") == nil, "bwlimit: 科学计数法不接受")
+
+expectEqual(bwlimitFlag(0), "", "bwlimitFlag: 0 不输出参数")
+expectEqual(bwlimitFlag(10240), " --bwlimit=10240", "bwlimitFlag: 正常输出")
+
+func cmdBW(_ source: String, _ target: String, kbps: Int,
+           rsync: Bool = true, logPath: String = "") -> String {
+    buildCopyCommand(cfg: cfg,
+                     params: CopyParams(source: source, target: target,
+                                        recursive: true, preserveAttrs: true, resume: true,
+                                        hostSpec: "", bwlimitKbps: kbps),
+                     rsyncAvailable: rsync, logPath: logPath)
+}
+
+expectEqual(cmdBW("/Users/me/data", "user@h:/data", kbps: 10240),
+            "rsync -r -a --partial --partial-dir=.rsync-partial --info=progress2 --bwlimit=10240 '/Users/me/data' 'user@h:/data'",
+            "buildCopyCommand: 限速参数紧跟 --info=progress2")
+expectEqual(cmdBW("/Users/me/a", "/Users/me/b", kbps: 10240, rsync: false),
+            "scp -r -p -l 81920 '/Users/me/a' '/Users/me/b'",
+            "buildCopyCommand: scp 降级用 -l（Kbit/s = KiB/s × 8）")
+
+// ============================================================
+// 19. 传输日志路径（--log-file）
+// ============================================================
+expectEqual(safeFileComponent("report.tar.gz"), "report.tar.gz", "safeFileComponent: 正常名不变")
+expectEqual(safeFileComponent("a/b:c d"), "a_b_c_d", "safeFileComponent: 路径分隔符与空格替换")
+expectEqual(safeFileComponent("."), "", "safeFileComponent: 纯点名清洗后为空")
+
+let logParams = CopyParams(source: "user@h:/data/report", target: "user@h2:/backup/report",
+                           recursive: true, preserveAttrs: true, resume: true, hostSpec: "")
+let logPathA = copyLogPath(params: logParams, root: "/tmp/la-logs")
+expectTrue(logPathA.hasPrefix("/tmp/la-logs/report-"), "copyLogPath: 根目录可控且带源名")
+expectTrue(logPathA.hasSuffix(".log"), "copyLogPath: 后缀 .log")
+expectEqual(logPathA, copyLogPath(params: logParams, root: "/tmp/la-logs"),
+            "copyLogPath: 同参数稳定同名（续传多次运行写同一个文件）")
+var logParamsOther = logParams
+logParamsOther.target = "/backup/other"
+expectTrue(copyLogPath(params: logParamsOther, root: "/tmp/la-logs") != logPathA,
+           "copyLogPath: 换目标换名")
+var logParamsRoot = logParams
+logParamsRoot.source = "user@h:/"
+expectTrue(copyLogPath(params: logParamsRoot, root: "/tmp/la-logs").hasPrefix("/tmp/la-logs/copy-"),
+           "copyLogPath: 源为 / 时用兜底名 copy")
+expectEqual(copyLogRoot(home: "/Users/me"), "/Users/me/Library/Logs/ai-launcher",
+            "copyLogRoot: 落在 ~/Library/Logs")
+
+let logTarget = "/Users/me/Library/Logs/ai-launcher/report-1a2b3c.log"
+let cmdWithLog = cmdBW("/Users/me/data", "user@h:/data", kbps: 0, logPath: logTarget)
+expectTrue(cmdWithLog.contains("--log-file='\(logTarget)'"), "buildCopyCommand: 本机发起时带 --log-file")
+expectTrue(cmdWithLog.hasSuffix("'/Users/me/data' 'user@h:/data'"),
+           "buildCopyCommand: 日志参数在路径之前，不影响源/目标位置")
+// 双远端直拷在源机执行，本机日志路径在源机可能不存在，故不加 --log-file（但限速照样带）
+let cmdDirect = cmdBW("user@h1:/a", "user@h2:/b", kbps: 5120, logPath: logTarget)
+expectTrue(!cmdDirect.contains("--log-file"), "buildCopyCommand: 双远端直拷不加本机日志")
+expectTrue(cmdDirect.contains("--bwlimit=5120"), "buildCopyCommand: 双远端直拷仍带限速")
+
+// 中转两段都写同一个日志文件（rsync --log-file 是追加模式）
+let relayP = CopyParams(source: "user@h1:/data/a", target: "user@h2:/data/b",
+                        recursive: true, preserveAttrs: true, resume: true,
+                        hostSpec: "", bwlimitKbps: 2048)
+let relayWithLog = buildRelayResumeCommand(params: relayP, root: "/tmp/la-stage", logPath: logTarget)
+expectEqual(relayWithLog.components(separatedBy: "--log-file='\(logTarget)'").count - 1, 2,
+            "buildRelayResumeCommand: 下载段与上传段各带一次日志")
+expectEqual(relayWithLog.components(separatedBy: "--bwlimit=2048").count - 1, 2,
+            "buildRelayResumeCommand: 两段都限速")
+
+// ============================================================
+// 20. 上次互拷任务（last-copy.json）
+// ============================================================
+let mem = CopyMemory(source: "user@h:/data", target: "/Users/me/backup",
+                     recursive: true, preserveAttrs: false, resume: true, bwlimitMBps: "10")
+let memData = encodeCopyMemory(mem)!
+let memBack = decodeCopyMemory(memData)
+expectEqual(memBack?.source, "user@h:/data", "memory: 源往返一致")
+expectEqual(memBack?.target, "/Users/me/backup", "memory: 目标往返一致")
+expectEqual(memBack?.preserveAttrs, false, "memory: 布尔选项往返一致")
+expectEqual(memBack?.bwlimitMBps, "10", "memory: 限速原文往返一致（回填显示不丢格式）")
+
+let emptyMem = CopyMemory(source: "", target: "", recursive: true, preserveAttrs: true,
+                          resume: true, bwlimitMBps: "")
+expectTrue(decodeCopyMemory(encodeCopyMemory(emptyMem)!) == nil, "memory: 空记录视为没有（不回填空壳）")
+expectTrue(decodeCopyMemory(Data("not json".utf8)) == nil, "memory: 损坏 JSON 返回 nil")
+let partialMem = Data("{\"source\":\"/a\",\"target\":\"/b\"}".utf8)
+expectEqual(decodeCopyMemory(partialMem)?.recursive, true, "memory: 缺字段用缺省 true")
+expectEqual(decodeCopyMemory(partialMem)?.bwlimitMBps, "", "memory: 缺限速字段回填空串")
+
+let memPath = NSTemporaryDirectory() + "ai-launcher-mem-\(UUID().uuidString).json"
+expectTrue(saveCopyMemory(mem, path: memPath), "memory: 保存成功")
+expectEqual(loadCopyMemory(path: memPath)?.target, "/Users/me/backup", "memory: 从文件读回一致")
+expectTrue(loadCopyMemory(path: memPath + ".missing") == nil, "memory: 文件不存在返回 nil")
+try? FileManager.default.removeItem(atPath: memPath)
+expectEqual(copyMemoryPath(home: "/Users/me"), "/Users/me/.config/ai-launcher/last-copy.json",
+            "memory: 落点与 config 同目录")
+
+// ============================================================
+// 21. 带日志的启动脚本
+// ============================================================
+let logScript = buildCommandScript(cmdLine: "echo hi", pathPrepend: [], autoCloseOnSuccess: true,
+                                   logPath: "/tmp/la-logs/x.log", startNote: "user@h:/a → /b")
+expectTrue(logScript.contains("mkdir -p '/tmp/la-logs'"), "logScript: 先建日志目录")
+expectTrue(logScript.contains(">> '/tmp/la-logs/x.log'"), "logScript: 追加写到日志文件")
+expectTrue(logScript.contains("[%s] 开始"), "logScript: 记开始时间")
+expectTrue(logScript.contains("[%s] 结束，退出码 %d"), "logScript: 记结束时间与退出码")
+expectTrue(logScript.contains("_rc=$?"), "logScript: 取出命令退出码")
+expectTrue(logScript.contains("exit $_rc"), "logScript: 透出退出码")
+expectTrue(zshSyntaxOK(logScript), "logScript: zsh -n 语法通过")
+
+// 任务摘要与路径含单引号/空格时不能把脚本写坏
+let trickyScript = buildCommandScript(cmdLine: "echo hi", pathPrepend: [], autoCloseOnSuccess: false,
+                                      logPath: "/tmp/my logs/x.log", startNote: "it's a → b")
+expectTrue(zshSyntaxOK(trickyScript), "logScript: 摘要含单引号、路径含空格仍语法正确")
+
+// 不带日志时脚本里不应出现 mkdir/printf（保持原来的精简形态）
+let plainScript = buildCommandScript(cmdLine: "echo hi", pathPrepend: [], autoCloseOnSuccess: false)
+expectTrue(!plainScript.contains("mkdir -p"), "logScript: 不传日志路径时不生成日志语句")
+
+// ============================================================
 // 汇总
 // ============================================================
 print("\n======== 测试汇总：\(passCount) 通过，\(failures.count) 失败 ========")

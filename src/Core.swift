@@ -33,6 +33,7 @@ struct CopyParams {
     var preserveAttrs: Bool
     var resume: Bool        // 断点续传
     var hostSpec: String    // 所选预设的 spec（user@host 或 host）
+    var bwlimitKbps: Int = 0 // rsync --bwlimit，单位 KiB/s；0 表示不限速
 }
 
 // 连接信息（用户名/密码/主机/端口分离）
@@ -310,11 +311,59 @@ func hasRsync() -> Bool {
     return p.terminationStatus == 0
 }
 
+// —— 限速（--bwlimit）——
+// UI 里输入的是 MB/s（允许小数，如 0.5），rsync 要的是 KiB/s。空或 0 表示不限速。
+// 非法输入（负数、非数字、多个小数点）返回 nil，由调用方提示而不是静默当成不限速。
+func parseBwlimitMBps(_ text: String) -> Int? {
+    let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if t.isEmpty { return 0 }
+    // 只允许数字与一个小数点，避免 Double("1e9")、"nan"、"inf" 这类意外值
+    var dotCount = 0
+    for ch in t {
+        if ch == "." { dotCount += 1; if dotCount > 1 { return nil }; continue }
+        if !ch.isNumber { return nil }
+    }
+    guard let mbps = Double(t), mbps.isFinite, mbps >= 0 else { return nil }
+    let kbps = Int((mbps * 1024).rounded())
+    return kbps > 0 ? kbps : 0
+}
+
+// 拼到 rsync 的限速参数；0 不输出
+func bwlimitFlag(_ kbps: Int) -> String {
+    kbps > 0 ? " --bwlimit=\(kbps)" : ""
+}
+
+// 文件名清洗：保留字母数字与 . - _，其余替换成 _（远端路径里的 / 会打断文件名）
+func safeFileComponent(_ name: String) -> String {
+    let safe = String(name.map { ch -> Character in
+        if ch.isLetter || ch.isNumber || ch == "." || ch == "-" || ch == "_" { return ch }
+        return "_"
+    })
+    // 纯点名（如 "."）会变成以点开头的隐藏文件，去掉点后若为空用调用方给的兜底名
+    return safe.replacingOccurrences(of: ".", with: "").isEmpty ? "" : safe
+}
+
+// —— 传输日志：按「源 + 目标」哈希命名，同一任务复用同一文件，续传的多次运行会追加到一起 ——
+func copyLogRoot(home: String = NSHomeDirectory()) -> String {
+    home + "/Library/Logs/ai-launcher"
+}
+
+func copyLogPath(params: CopyParams, root: String = copyLogRoot()) -> String {
+    let raw = splitDirAndName(splitRemoteSpec(params.source)?.path ?? params.source).name
+    let safe = safeFileComponent(raw)
+    let name = safe.isEmpty ? "copy" : safe
+    return root + "/" + name + "-" + shortHash(params.source + "|" + params.target) + ".log"
+}
+
+
 // 拼接互拷命令。返回命令行字符串
+// logPath：rsync --log-file 的落点（空串不加）。只在「本机发起」的 rsync 上加；
+// 双远端直拷是在源机上执行的，本机路径在源机不存在，故不加
 // 服务器↔服务器直拷：ssh 到源机执行 rsync（避免本机中转）
 // rsyncAvailable：本机是否有 rsync（由调用方用 hasRsync() 探测后传入，保持本函数无副作用可测）
 // 自定义端口：rsync/scp 不支持 user@host:port:path，端口拆出后走 -e "ssh -p N" / scp -P
-func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool) -> String {
+func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool,
+                      logPath: String = "") -> String {
     let srcRemote = isRemotePath(params.source)
     let dstRemote = isRemotePath(params.target)
 
@@ -324,6 +373,7 @@ func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool)
     // 不会把「看起来完整、实际缺尾」的文件留在最终路径；也不用 --append-verify —— 目标文件被改短时
     // 它会先追加一段垃圾再靠校验发现，大文件等于白传一遍
     let resumeFlags = params.resume ? " --partial --partial-dir=.rsync-partial" : ""
+    let bwFlag = bwlimitFlag(params.bwlimitKbps)
     let extraFlags = cfg.defaultFlags.isEmpty ? "" : " " + cfg.defaultFlags.joined(separator: " ")
 
     // 服务器↔服务器直拷：ssh 到源机执行 rsync
@@ -333,7 +383,8 @@ func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool)
             return ""
         }
         // 在源机上跑 rsync；-e ssh 让源机 ssh 到目标机（目标机端口非 22 时须带 -p）
-        var inner = "rsync" + recursiveFlag + preserveFlag + resumeFlags + " --info=progress2" + extraFlags
+        // 日志不加：命令在源机上跑，本机日志路径在源机不一定存在
+        var inner = "rsync" + recursiveFlag + preserveFlag + resumeFlags + " --info=progress2" + bwFlag + extraFlags
         if !t.port.isEmpty {
             inner += " -e " + shellQuote("ssh -p \(t.port)")
         }
@@ -348,7 +399,10 @@ func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool)
 
     // 本机有 rsync：用 rsync（远端侧重写掉端口，端口走 -e "ssh -p N"）
     if rsyncAvailable {
-        var base = "rsync" + recursiveFlag + preserveFlag + resumeFlags + " --info=progress2" + extraFlags
+        // --log-file 让 rsync 自己写日志（客户端侧），不经过管道，因此不干扰 ssh 的交互式密码输入
+        let logFlag = logPath.isEmpty ? "" : " --log-file=" + shellQuote(logPath)
+        var base = "rsync" + recursiveFlag + preserveFlag + resumeFlags + " --info=progress2" +
+            bwFlag + logFlag + extraFlags
         var srcArg = params.source
         var dstArg = params.target
         var remotePorts: [String] = []
@@ -367,9 +421,11 @@ func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool)
     }
 
     // 无 rsync：降级 scp（-r 递归 -p 保留属性；注意 scp 不支持断点续传，端口用 -P）
+    // 限速也能生效：scp -l 的单位是 Kbit/s，换算成 KiB/s * 8
     var scpFlags = ""
     if params.recursive { scpFlags += " -r" }
     if params.preserveAttrs { scpFlags += " -p" }
+    if params.bwlimitKbps > 0 { scpFlags += " -l \(params.bwlimitKbps * 8)" }
     var srcArg = params.source
     var dstArg = params.target
     var remotePorts: [String] = []
@@ -476,19 +532,16 @@ func shortHash(_ s: String) -> String {
 // 暂存子目录：<源文件名>-<短哈希>，哈希由「源规格 + 目标规格」决定
 func relayStagingDir(params: CopyParams, root: String = relayStagingRoot()) -> String {
     let name = splitDirAndName(splitRemoteSpec(params.source)?.path ?? "").name
-    let safe = String(name.map { ch -> Character in
-        if ch.isLetter || ch.isNumber || ch == "." || ch == "-" || ch == "_" { return ch }
-        return "_"
-    })
-    // 源是 / 或 . 时 splitDirAndName 会给 "."，若不处理会生成以点开头的隐藏目录（Finder 里看不见）
-    let meaningful = safe.replacingOccurrences(of: ".", with: "")
-    let dirName = (meaningful.isEmpty ? "relay" : safe) + "-" + shortHash(params.source + "|" + params.target)
+    let safe = safeFileComponent(name)
+    // 源是 / 或 . 时清洗后为空，若不兜底会生成以点开头的隐藏目录（Finder 里看不见）
+    let dirName = (safe.isEmpty ? "relay" : safe) + "-" + shortHash(params.source + "|" + params.target)
     return root + "/" + dirName
 }
 
 // 两段式中转命令：先拉到本机暂存（--partial 断点续传），再推到目标机，成功后清理暂存
 // 与 tar 流的区别：占用本地磁盘（约等于一份源数据），但中断可续、有大文件进度
-func buildRelayResumeCommand(params: CopyParams, root: String = relayStagingRoot()) -> String {
+func buildRelayResumeCommand(params: CopyParams, root: String = relayStagingRoot(),
+                             logPath: String = "") -> String {
     guard let s = splitRemoteSpec(params.source),
           let t = splitRemoteSpec(params.target),
           !s.path.isEmpty, !t.path.isEmpty else {
@@ -500,7 +553,10 @@ func buildRelayResumeCommand(params: CopyParams, root: String = relayStagingRoot
     let preserveFlag = params.preserveAttrs ? " -a" : ""
     // --partial-dir 把半截文件留在专属目录里，重跑时 rsync 以它为基底做增量，比 --append-verify 安全
     let resumeFlags = params.resume ? " --partial --partial-dir=.rsync-partial" : ""
-    let flags = recursiveFlag + preserveFlag + resumeFlags + " --info=progress2"
+    // 两段都写同一个日志文件：rsync 的 --log-file 是追加模式，一次中转的下载段与上传段会接在一起
+    let logFlag = logPath.isEmpty ? "" : " --log-file=" + shellQuote(logPath)
+    let flags = recursiveFlag + preserveFlag + resumeFlags + " --info=progress2" +
+        bwlimitFlag(params.bwlimitKbps) + logFlag
 
     func sshE(_ host: String, _ port: String) -> String {
         port.isEmpty ? "" : " -e " + shellQuote("ssh -p \(port)")
@@ -523,6 +579,7 @@ func buildRelayResumeCommand(params: CopyParams, root: String = relayStagingRoot
 
 // 服务器↔服务器直拷失败时的一键中转：本机 tar 流（不占本地磁盘、不依赖源机 rsync）
 // ssh 源机 tar 出 -> 本机管道 -> ssh 目标机 tar 入（目标路径自动 mkdir -p）
+// 注：tar 流没有限速参数，bwlimit 只对 rsync 生效；这条路径的限速需要外部工具（pv/tsocket），不做
 func buildRelayCopyCommand(params: CopyParams) -> String {
     guard let s = splitRemoteSpec(params.source),
           let t = splitRemoteSpec(params.target),
@@ -548,15 +605,30 @@ func buildRelayCopyCommand(params: CopyParams) -> String {
 
 // —— 生成 Terminal 启动脚本（纯函数，便于 zsh -n 语法校验与断言）——
 // autoCloseOnSuccess：成功时按 tty 精确关闭本 tab 所在窗口（匹配不到则不关，避免误关其它窗口）
-func buildCommandScript(cmdLine: String, pathPrepend: [String], autoCloseOnSuccess: Bool) -> String {
+// logPath：非空时把「开始/结束 + 退出码」追加进日志；rsync 自身的明细由 --log-file 写同一个文件
+// startNote：日志里记的这次任务摘要（源 → 目标），便于事后回看是哪一次运行
+func buildCommandScript(cmdLine: String, pathPrepend: [String], autoCloseOnSuccess: Bool,
+                        logPath: String = "", startNote: String = "") -> String {
     let pathLine = buildPathExport(pathPrepend)
     var lines: [String] = ["#!/bin/zsh"]
     if !pathLine.isEmpty { lines.append(pathLine) }
     // 记录本 tab 的 tty，供成功关窗时精确匹配
     lines.append("_tty=$(tty 2>/dev/null)")
+    let logging = !logPath.isEmpty
+    if logging {
+        // 日志目录可能还不存在（首次运行），先建出来
+        lines.append("mkdir -p " + shellQuote((logPath as NSString).deletingLastPathComponent))
+        lines.append("printf '[%s] 开始 %s\\n' \"$(date '+%F %T')\" " + shellQuote(startNote) +
+                     " >> " + shellQuote(logPath))
+    }
     lines.append(cmdLine)
+    if logging || autoCloseOnSuccess {
+        lines.append("_rc=$?")
+    }
+    if logging {
+        lines.append("printf '[%s] 结束，退出码 %d\\n' \"$(date '+%F %T')\" \"$_rc\" >> " + shellQuote(logPath))
+    }
     if autoCloseOnSuccess {
-        lines.append("local _rc=$?")
         lines.append("echo \"===== 拷贝完成（退出码 $_rc）=====\"")
         lines.append("if [ $_rc -eq 0 ]; then")
         lines.append("    sleep 2")
@@ -571,6 +643,8 @@ func buildCommandScript(cmdLine: String, pathPrepend: [String], autoCloseOnSucce
         lines.append("      -e 'end try' \\")
         lines.append("      -e 'end tell' >/dev/null 2>&1")
         lines.append("fi")
+    }
+    if logging || autoCloseOnSuccess {
         lines.append("exit $_rc")
     }
     return lines.joined(separator: "\n") + "\n"
@@ -650,6 +724,62 @@ func loadCopyConfig(path: String = configPath) -> CopyConfig {
     }
     let flags = (copy["defaultFlags"] as? [Any] ?? []).compactMap { $0 as? String }
     return CopyConfig(hosts: hosts, defaultFlags: flags)
+}
+
+// —— 上次互拷任务 ——
+// 续传的前提是「源/目标不变、再点一次」，但 app 重启后表单是空的，等于续不上。
+// 单独存一个文件而不是写回 config.json：config 是手写的，程序不该去改它的格式。
+// 只存路径与选项，不存密码（密码从不落盘，仍由 ssh 在真 TTY 里交互）。
+struct CopyMemory {
+    var source: String
+    var target: String
+    var recursive: Bool
+    var preserveAttrs: Bool
+    var resume: Bool
+    var bwlimitMBps: String   // 原样保存用户输入（空表示不限速），回填后显示一致
+}
+
+func copyMemoryPath(home: String = NSHomeDirectory()) -> String {
+    home + "/.config/ai-launcher/last-copy.json"
+}
+
+func encodeCopyMemory(_ m: CopyMemory) -> Data? {
+    let dict: [String: Any] = [
+        "source": m.source,
+        "target": m.target,
+        "recursive": m.recursive,
+        "preserveAttrs": m.preserveAttrs,
+        "resume": m.resume,
+        "bwlimitMBps": m.bwlimitMBps,
+    ]
+    return try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys])
+}
+
+// 容错：缺字段用缺省值；源和目标都为空视为「没有记录」（避免回填一个空壳）
+func decodeCopyMemory(_ data: Data) -> CopyMemory? {
+    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+    let source = json["source"] as? String ?? ""
+    let target = json["target"] as? String ?? ""
+    if source.isEmpty && target.isEmpty { return nil }
+    return CopyMemory(source: source,
+                      target: target,
+                      recursive: json["recursive"] as? Bool ?? true,
+                      preserveAttrs: json["preserveAttrs"] as? Bool ?? true,
+                      resume: json["resume"] as? Bool ?? true,
+                      bwlimitMBps: json["bwlimitMBps"] as? String ?? "")
+}
+
+func loadCopyMemory(path: String = copyMemoryPath()) -> CopyMemory? {
+    guard let data = FileManager.default.contents(atPath: path) else { return nil }
+    return decodeCopyMemory(data)
+}
+
+@discardableResult
+func saveCopyMemory(_ m: CopyMemory, path: String = copyMemoryPath()) -> Bool {
+    let dir = (path as NSString).deletingLastPathComponent
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    guard let data = encodeCopyMemory(m) else { return false }
+    return (try? data.write(to: URL(fileURLWithPath: path))) != nil
 }
 
 // —— 免密机器：读 ~/.ssh/config 解析 Host/HostName/User ——
