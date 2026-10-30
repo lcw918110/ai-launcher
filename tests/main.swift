@@ -209,11 +209,11 @@ func cmd(_ source: String, _ target: String,
 }
 
 expectEqual(cmd("/Users/me/data", "user@192.0.2.101:/home/user/data"),
-            "rsync -r -a --partial --append-verify --info=progress2 '/Users/me/data' 'user@192.0.2.101:/home/user/data'",
+            "rsync -r -a --partial --partial-dir=.rsync-partial --info=progress2 '/Users/me/data' 'user@192.0.2.101:/home/user/data'",
             "buildCopyCommand: push 全选项")
 
 expectEqual(cmd("/Users/me/data", "user@192.168.1.5:2222:/data"),
-            "rsync -r -a --partial --append-verify --info=progress2 -e 'ssh -p 2222' '/Users/me/data' 'user@192.168.1.5:/data'",
+            "rsync -r -a --partial --partial-dir=.rsync-partial --info=progress2 -e 'ssh -p 2222' '/Users/me/data' 'user@192.168.1.5:/data'",
             "buildCopyCommand: push 自定义端口走 -e ssh -p（回归）")
 
 expectEqual(cmd("user@192.168.1.5:2222:/data/x", "/Users/me/data", rsync: false),
@@ -221,16 +221,16 @@ expectEqual(cmd("user@192.168.1.5:2222:/data/x", "/Users/me/data", rsync: false)
             "buildCopyCommand: pull 无 rsync 降级 scp -P（回归）")
 
 expectEqual(cmd("user@192.0.2.101:/home/data", "/Users/me/data"),
-            "rsync -r -a --partial --append-verify --info=progress2 'user@192.0.2.101:/home/data' '/Users/me/data'",
+            "rsync -r -a --partial --partial-dir=.rsync-partial --info=progress2 'user@192.0.2.101:/home/data' '/Users/me/data'",
             "buildCopyCommand: pull 默认端口")
 
 // 直拷：ssh 到源机执行 rsync，源机端口走 ssh -p，目标机端口走内层 -e "ssh -p"
 expectEqual(cmd("user@192.168.1.5:2222:/data/a", "user@192.168.1.6:2200:/data/b"),
-            "ssh -t -p 2222 'user@192.168.1.5' 'rsync -r -a --partial --append-verify --info=progress2 -e '\\''ssh -p 2200'\\'' '\\''/data/a'\\'' '\\''user@192.168.1.6:/data/b'\\'''",
+            "ssh -t -p 2222 'user@192.168.1.5' 'rsync -r -a --partial --partial-dir=.rsync-partial --info=progress2 -e '\\''ssh -p 2200'\\'' '\\''/data/a'\\'' '\\''user@192.168.1.6:/data/b'\\'''",
             "buildCopyCommand: 双远端直拷+双端口")
 
 expectEqual(cmd("user@h1:/a", "user@h2:/b"),
-            "ssh -t 'user@h1' 'rsync -r -a --partial --append-verify --info=progress2 '\\''/a'\\'' '\\''user@h2:/b'\\'''",
+            "ssh -t 'user@h1' 'rsync -r -a --partial --partial-dir=.rsync-partial --info=progress2 '\\''/a'\\'' '\\''user@h2:/b'\\'''",
             "buildCopyCommand: 双远端直拷默认端口")
 
 expectEqual(cmd("/Users/me/a", "/Users/me/b", recursive: true, preserveAttrs: false, resume: false),
@@ -244,8 +244,27 @@ expectEqual(cmd("/Users/me/my data", "user@h:/tmp/x y", recursive: false, preser
 // 注：isRemotePath 为真时 splitRemoteSpec 必然可解析，故「解析失败返回空」不可达；
 // 这里改为覆盖「双远端但缺路径」的边界：host: 后为空路径仍应产出合法直拷命令
 expectEqual(cmd("user@h1:/a", "user@h2:"),
-            "ssh -t 'user@h1' 'rsync -r -a --partial --append-verify --info=progress2 '\\''/a'\\'' '\\''user@h2:'\\'''",
+            "ssh -t 'user@h1' 'rsync -r -a --partial --partial-dir=.rsync-partial --info=progress2 '\\''/a'\\'' '\\''user@h2:'\\'''",
             "buildCopyCommand: 双远端空路径仍可拼命令")
+
+// 续传语义：三条路径（push / pull / 双远端直拷）都必须用 --partial-dir，且不得出现 --append-verify
+for (label, c) in [
+    ("push", cmd("/Users/me/data", "user@h:/data")),
+    ("pull", cmd("user@h:/data", "/Users/me/data")),
+    ("双远端", cmd("user@h1:/a", "user@h2:/b")),
+] {
+    expectTrue(c.contains("--partial-dir=.rsync-partial"), "续传@\(label): 半截文件落 .rsync-partial，不污染最终路径")
+    expectTrue(c.contains("--partial "), "续传@\(label): 带 --partial 才会保留中断现场")
+    expectTrue(!c.contains("--append-verify"), "续传@\(label): 禁用 append-verify（目标被改短会写坏）")
+}
+// 不勾续传时不能残留任何续传相关的 partial 参数（否则中断会留下隐藏目录）
+for (label, c) in [
+    ("push", cmd("/Users/me/data", "user@h:/data", resume: false)),
+    ("pull", cmd("user@h:/data", "/Users/me/data", resume: false)),
+    ("双远端", cmd("user@h1:/a", "user@h2:/b", resume: false)),
+] {
+    expectTrue(!c.contains("--partial"), "不续传@\(label): 无 --partial")
+}
 
 // ============================================================
 // 9. buildFillPlan（填充决策六场景，覆盖串框 bug 回归）

@@ -3,6 +3,23 @@
 版本号遵循「主版本.次版本.修订号」，1.0 之前每次成批改动升次版本号。安装包版本以 `src/Info.plist` 的
 `CFBundleShortVersionString` 为准，构建脚本原样拷入 `.app`。
 
+## 0.4.3 — 2026-10-30
+
+直连互拷的断点续传改成和可续传中转同一套实现，修掉「中途失败会在目标路径留下残缺文件」的隐患。
+
+- **直连续传改用 `--partial-dir`**：`buildCopyCommand` 的 push / pull / 双远端直拷三条路径，续传参数由
+  `--partial --append-verify` 换成 `--partial --partial-dir=.rsync-partial`，与 `buildRelayResumeCommand` 统一。
+  - 旧参数实测后果：200 MB 文件限速 2 MB/s、6 秒后中断，目标路径直接出现一个 11.6 MB 的 `big.bin`——
+    文件名正确、大小不对，后续脚本或人一看「文件在」就会误判传完。
+  - 新参数：半截文件落在目标侧 `.rsync-partial/` 里，最终路径不出现任何文件，重跑时 rsync 以它为基底做增量。
+  - 另一个理由：`--append-verify` 假设目标文件是源文件的前缀，目标被改短时会先追加一段垃圾再靠校验发现，
+    大文件等于白传一遍；`--partial-dir` 走的是滚动校验增量，只补真正缺的字节。
+- **真实链路实测**（Docker + openssh + rsync 3.4.3，非本机模拟）：200 MB 随机文件限速 2 MB/s，6 秒打断 →
+  `.rsync-partial/big.bin` 11.8 MB、最终路径为空；重跑 `Matched data 11,826,672` / `Literal data 197,888,528`，
+  即只补了剩下的 197.9 MB；md5 与源一致；成功后 `.rsync-partial` 自动清空。
+- **测试 249 → 261 条**：为推送、拉取、双远端直拷三条路径分别断言续传时带 `--partial-dir`、不带 `--append-verify`，
+  以及不勾续传时不留任何 `--partial` 参数。
+
 ## 0.4.2 — 2026-10-30
 
 测试补全 + 真实链路验证发现的两个中转 bug。

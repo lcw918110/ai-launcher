@@ -320,7 +320,10 @@ func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool)
 
     let recursiveFlag = params.recursive ? " -r" : ""
     let preserveFlag = params.preserveAttrs ? " -a" : ""
-    let resumeFlags = params.resume ? " --partial --append-verify" : ""
+    // 续传统一用 --partial-dir：半截文件留在目标端的 .rsync-partial 里，重跑时 rsync 以它为基底做增量，
+    // 不会把「看起来完整、实际缺尾」的文件留在最终路径；也不用 --append-verify —— 目标文件被改短时
+    // 它会先追加一段垃圾再靠校验发现，大文件等于白传一遍
+    let resumeFlags = params.resume ? " --partial --partial-dir=.rsync-partial" : ""
     let extraFlags = cfg.defaultFlags.isEmpty ? "" : " " + cfg.defaultFlags.joined(separator: " ")
 
     // 服务器↔服务器直拷：ssh 到源机执行 rsync
