@@ -63,8 +63,9 @@ xattr -dr com.apple.quarantine "/Applications/AI终端启动器.app"
 |------|------|
 | `src/Core.swift` | 纯逻辑层（仅 Foundation）：连接串解析、路径/主机拆分、互拷命令拼装、配置读写、`~/.ssh/config` 解析、Terminal 启动脚本生成 |
 | `src/main.swift` | UI 层（AppKit）：窗口与滚动视图、按钮、弹窗、联想候选框、Terminal 启动 |
-| `tests/main.swift` | Core 全量断言用例（311 条，纯命令行，无 GUI 副作用） |
+| `tests/main.swift` | Core 全量断言用例（纯命令行，无 GUI 副作用，条数见 [docs/05](docs/05-测试与验收.md)） |
 | `scripts/build.sh` / `scripts/test.sh` | 编译安装 / 跑测试 |
+| `scripts/check-docs.sh` | 校验文档与代码一致（版本号、断言数），CI 必跑 |
 | `scripts/package.sh` / `scripts/sign-app.sh` | 打 DMG 与 zip（universal）/ 给 `.app` 签名（Developer ID 或 ad-hoc） |
 | `scripts/install-remote.sh` | 给他人用的一键安装（下载 → 装 → 清 quarantine） |
 | `.github/workflows/ci.yml` / `release.yml` | CI：编译 + 跑测试 / 推 tag 自动打包发布 |
@@ -76,7 +77,7 @@ xattr -dr com.apple.quarantine "/Applications/AI终端启动器.app"
 ./scripts/test.sh
 ```
 
-覆盖连接串全格式（含 `IP:端口` 回归）、命令拼装（含自定义端口 `-e "ssh -p N"`、tar 中转与可续传中转、限速换算、日志参数位置）、启动脚本（含 `zsh -n` 语法校验、按 tty 关窗、日志起止记录）、任务记忆读写、远端路径导航、IPv6、`pathPrepend`、填充决策、配置读写、免密主机解析等 311 条断言，失败返回非 0，可直接进 CI。
+覆盖连接串全格式（含 `IP:端口` 回归）、命令拼装（含自定义端口 `-e "ssh -p N"`、tar 中转与可续传中转、限速换算、日志参数位置）、启动脚本（含 `zsh -n` 语法校验、按 tty 关窗、日志起止记录）、任务记忆读写、远端路径导航、IPv6、`pathPrepend`、填充决策、配置读写、免密主机解析等全套断言，失败返回非 0，可直接进 CI。
 
 GUI 冒烟（可选；加 `--no-launch` 不会弹 Terminal）：
 
