@@ -3,6 +3,19 @@
 版本号遵循「主版本.次版本.修订号」，1.0 之前每次成批改动升次版本号。安装包版本以 `src/Info.plist` 的
 `CFBundleShortVersionString` 为准，构建脚本原样拷入 `.app`。
 
+## 0.4.6 — 2026-11-10
+
+「经本机中转」这个按钮下线了：直连能不能走由程序自己测，测不通自动中转，用户只点一次「开始拷贝」。
+
+- **为什么去掉按钮**：直连的前提是「源机 → 目标机」免密（0.4.5 的跨机实测结论），这件事界面上完全看不出来。把判断交给用户，等于让他先失败一次、再回头点第二个按钮；而按钮又常驻在操作行，本机↔远端时点了只会弹一句「只用于服务器↔服务器」。
+- **改成后台探测**：源和目标都是远端时，点「开始拷贝」先在后台跑 `buildDirectProbeCommand` —— 外层 `ssh` 到源机，源机上先 `command -v rsync` 再 `ssh` 目标机 `true`，两层都是 `BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1`。任一不成立即判直连不通。
+- **自动选路**（`resolveDirectRoute`，纯函数）：直连通 → 直连；不通但本机两端都登得上 → 两段 rsync（`buildRelayResumeCommand`，勾了续传且本机有可用 rsync）或 tar 流（未勾续传 / 本机没 rsync）；本机也到不了其中一端 → 状态栏直接报「两端都不可达」，不再起 Terminal。
+- **不在别人服务器上留指纹**：探测故意**不加** `StrictHostKeyChecking=accept-new`，首次连接遇未知主机键就判不通（改走中转，功能不损失）。
+- **顺带修一个只在别人机器上复现的隐患**：`hasRsync()` 原来只判「命令存在」，而 macOS 15 起 `/usr/bin/rsync` 是 openrsync —— 本机实测 `rsync: unrecognized option '--info=progress2'`，也不支持 `--log-file`。新增 `RsyncFlavor`（`none` / `openRsync` / `full`），`buildCopyCommand` 与 `buildRelayResumeCommand` 按能力决定是否拼这两个参数（`--partial-dir` 一律保留，续传不能丢），状态栏会提示「系统自带 openrsync」。
+- **UI**：删掉「经本机中转」按钮与 `startRelayCopy`；探测期间「开始拷贝」置灰防连点，状态栏显示「检测直连：源机 → 目标机 …」，出结果后写清本次走法。
+- **测试 311 → 340 条**：`parseRsyncFlavor`（openrsync / GNU / 空 / 认不出的实现）、`buildDirectProbeCommand`（BatchMode、超时、内层引号转义、端口透传、不含路径、不写 StrictHostKeyChecking、源机 rsync 前置）、`buildLocalProbeCommand`（端口位置、IPv6 去括号、空主机）、`resolveDirectRoute` 四态、openrsync 下两个拼装函数是否漏参数。
+- **实测**：容器 sshd 三态验证 —— 源机有 rsync 且免密 → `rc=0`（0.29s 判直连）；卸掉 rsync → `rc=127`（判不通 → 中转）；目标不可达 → `rc=255`（5.0s 超时退出，不卡 UI）。
+
 ## 0.4.5 — 2026-10-31
 
 修掉「从 GitHub 下载后提示已损坏」的分发问题，并补上完整的打包与安装链路。

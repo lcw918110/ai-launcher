@@ -9,7 +9,7 @@ macOS 本机 Dock 窗口应用：按「目录 × CLI」一键在 Terminal 启动
 - macOS 13+
 - Xcode Command Line Tools（`swiftc`）
 - Terminal.app（用临时 `.command` 打开新窗口，不走辅助功能授权）
-- 互拷建议本机已装 `rsync`；没有则降级 `scp`（会在状态栏提示）
+- 互拷建议本机已装 `rsync`（Homebrew 版）；macOS 自带的 `/usr/bin/rsync` 其实是 openrsync，没有单行进度与 rsync 明细日志（续传、限速不受影响），没有 rsync 则降级 `scp`——两种情况都会在状态栏提示
 - 免密互拷依赖 `~/.ssh/config` 与已安装的公钥
 
 ## 编译安装
@@ -51,7 +51,7 @@ xattr -dr com.apple.quarantine "/Applications/AI终端启动器.app"
 2. 「其他目录」可选任意文件夹再启动。
 3. 改完 `config.json` 后点「刷新」即可，不必重编译（已填的互拷表单会保留）。
 4. 窗口下方「互拷」：填源/目标路径（本地绝对路径或 `user@host:path`），可解析连接串、从预设或免密联想选主机、逐层浏览远端目录，点「开始拷贝」在 Terminal 看进度。
-5. 服务器↔服务器直拷失败时用「经本机中转」：勾选「断点续传」走两段 rsync（源机→本机暂存→目标机，中断可续，占本地磁盘）；未勾选走 tar 流（不占盘、不可续）。
+5. 服务器↔服务器不用你选路：点「开始拷贝」后先自动探测直连（源机有 `rsync` 且**免密可达目标机**），通了走直连；不通自动改走本机中转——勾选「断点续传」走两段 rsync（源机→本机暂存→目标机，中断可续，占本地磁盘），未勾选走 tar 流（不占盘、不可续）。状态栏会写明本次走了哪条。
 6. 「断点续传」默认勾选，直连（本机↔远端、远端↔远端）与中转都支持：中断后半截文件在目标侧 `.rsync-partial/`，最终路径不出现残缺文件，原样再执行一次即从断点补齐。
 7. 上次的源/目标/选项会在启动时自动回填（关掉 app 再开也不用重填）；每次拷贝都写日志到 `~/Library/Logs/ai-launcher/`；大文件可在「限速」填 MB/s 避免打满专线。
 
@@ -69,7 +69,7 @@ xattr -dr com.apple.quarantine "/Applications/AI终端启动器.app"
 | `scripts/package.sh` / `scripts/sign-app.sh` | 打 DMG 与 zip（universal）/ 给 `.app` 签名（Developer ID 或 ad-hoc） |
 | `scripts/install-remote.sh` | 给他人用的一键安装（下载 → 装 → 清 quarantine） |
 | `.github/workflows/ci.yml` / `release.yml` | CI：编译 + 跑测试 / 推 tag 自动打包发布 |
-| `LICENSE` / `CHANGELOG.md` | MIT 许可 / 版本改动记录（当前 0.4.5） |
+| `LICENSE` / `CHANGELOG.md` | MIT 许可 / 版本改动记录（当前 0.4.6） |
 
 ## 测试
 

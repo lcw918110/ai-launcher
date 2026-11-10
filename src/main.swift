@@ -200,6 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var copyResumeCheck: NSButton!
     var copyBwlimitField: NSTextField!   // 限速（MB/s，空 = 不限速）
     var copyStatusLabel: NSTextField!
+    var copyStartBtn: NSButton?          // 探测直连期间临时置灰，避免连点重复发起
     var copyPresetPopup: NSPopUpButton!   // 互拷预设（config 的 copy.hosts）
     var copyHosts: [CopyHostConfig] = []
     var contentStack: NSStackView!        // 滚动视图里的内容栈（自测与刷新用）
@@ -615,21 +616,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         stack.addView(optRow, in: .leading)
 
         // 开始按钮 + 状态
+        // 只有一个按钮：直连能不能走由后台实测决定，中转对用户不可见（见 startDirectResolve）
         let actionRow = NSStackView()
         actionRow.orientation = .horizontal
         actionRow.spacing = 8
         let startBtn = NSButton(title: "开始拷贝", target: self, action: #selector(startCopy(_:)))
         startBtn.bezelStyle = .rounded
         startBtn.controlSize = .small
-        let relayBtn = NSButton(title: "经本机中转", target: self, action: #selector(startRelayCopy(_:)))
-        relayBtn.bezelStyle = .rounded
-        relayBtn.controlSize = .small
-        relayBtn.toolTip = "服务器↔服务器直拷失败时用。勾选「断点续传」走两段 rsync（源机→本机暂存→目标机，中断可续，占本地磁盘）；未勾选用 tar 流（不占盘、不可续传）"
+        copyStartBtn = startBtn
         copyStatusLabel = NSTextField(labelWithString: "就绪")
         copyStatusLabel.font = NSFont.systemFont(ofSize: 11)
         copyStatusLabel.textColor = .secondaryLabelColor
         actionRow.addView(startBtn, in: .leading)
-        actionRow.addView(relayBtn, in: .leading)
         actionRow.addView(copyStatusLabel, in: .leading)
         stack.addView(actionRow, in: .leading)
     }
@@ -1021,31 +1019,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             return
         }
         let direction = built.direction
-
-        // 本机是否有 rsync 一次性探测（结果同时用于命令拼装与降级提示）
-        let rsyncOK = hasRsync()
         // 日志落点按「源 + 目标」哈希固定：续传的多次运行会追加到同一个文件，事后能连起来看
         let logPath = copyLogPath(params: params)
-        let cmd = buildCopyCommand(cfg: cfg, params: params, rsyncAvailable: rsyncOK, logPath: logPath)
+        rememberCurrentCopy(params: params)
+
+        // 双远端：直连能不能走必须实测（取决于「源机→目标机」免密，界面上看不出来），
+        // 所以先探测再选路，用户只看到一个「开始拷贝」
+        if direction == "direct" {
+            startDirectResolve(cfg: cfg, params: params, logPath: logPath)
+            return
+        }
+
+        // 本机↔远端 / 本地：本机 rsync 能力一次性探测（同时决定 rsync/scp 与可选参数）
+        let flavor = rsyncFlavor()
+        let cmd = buildCopyCommand(cfg: cfg, params: params, rsyncAvailable: flavor != .none,
+                                   logPath: logPath, useProgress2: flavor == .full,
+                                   useLogFile: flavor == .full)
         if cmd.isEmpty {
             copyStatusLabel.stringValue = "无法拼接命令，请检查路径格式"
             return
         }
-        debugLog("[互拷] 方向=\(direction) 拼装命令: \(cmd)")
-        rememberCurrentCopy(params: params)
+        debugLog("[互拷] 方向=\(direction) rsync=\(flavor) 拼装命令: \(cmd)")
 
-        // 状态提示
-        switch direction {
-        case "direct":
-            copyStatusLabel.stringValue = "直拷：将在源机执行 rsync（源机无 rsync 时改用「经本机中转」）"
-        case "local":
-            copyStatusLabel.stringValue = "本地拷贝：进行中…（Terminal 窗口查看进度）"
-        default:
-            copyStatusLabel.stringValue = "进行中…（Terminal 窗口查看进度）"
-        }
-        // 无 rsync 降级 scp 时明确告知（scp 不支持断点续传，不能静默降级）
-        if !rsyncOK && direction != "local" && direction != "direct" {
-            copyStatusLabel.stringValue += "（本机无 rsync，已降级 scp，断点续传不可用）"
+        copyStatusLabel.stringValue = direction == "local"
+            ? "本地拷贝：进行中…（Terminal 窗口查看进度）"
+            : "进行中…（Terminal 窗口查看进度）"
+        // 降级/受限要明说，不能静默（scp 没有断点续传，openrsync 没有进度与明细日志）
+        if direction != "local" {
+            if flavor == .none {
+                copyStatusLabel.stringValue += "（本机无 rsync，已降级 scp，断点续传不可用）"
+            } else if flavor == .openRsync {
+                copyStatusLabel.stringValue += "（系统自带 openrsync：无单行进度与明细日志，续传仍可用）"
+            }
         }
         copyStatusLabel.stringValue += " 日志：\((logPath as NSString).lastPathComponent)"
 
@@ -1066,49 +1071,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         saveCopyMemory(mem)
     }
 
-    // 服务器↔服务器直拷失败时的兜底：
-    // - 勾了「断点续传」且本机有 rsync → 两段式（源机 → 本机暂存 → 目标机），中断后重跑从断点继续
-    // - 否则 → tar 流经本机，不占本地磁盘、不依赖源机 rsync，但不能续传
-    @objc func startRelayCopy(_ sender: Any) {
-        let built = makeCopyParams()
-        guard let params = built.params else {
-            copyStatusLabel.stringValue = built.error ?? "参数不完整"
-            return
-        }
-        guard built.direction == "direct" else {
-            copyStatusLabel.stringValue = "「经本机中转」只用于服务器↔服务器（当前方向：\(built.direction)）"
-            return
-        }
-        let logPath = copyLogPath(params: params)
-        let note = "\(params.source) → \(params.target)"
-        rememberCurrentCopy(params: params)
+    // 双远端选路：后台实测「源机 → 目标机」能否免密直连，再决定直连 / 中转。
+    // 不再让用户点「经本机中转」—— 直连能跑就跑直连，跑不了自动兜底，
+    // 中转的两种实现（两段 rsync / tar 流）也只由 rsync 能力与「断点续传」决定。
+    func startDirectResolve(cfg: CopyConfig, params: CopyParams, logPath: String) {
+        copyStatusLabel.stringValue = "检测直连：源机 → 目标机 …"
+        copyStartBtn?.isEnabled = false   // 探测是异步的，置灰避免连点重复发起
+        let directProbe = buildDirectProbeCommand(params: params)
+        debugLog("[互拷] 直连探测命令: \(directProbe)")
 
-        if params.resume && hasRsync() {
-            let cmd = buildRelayResumeCommand(params: params, logPath: logPath)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let directOK = self.runProbe(directProbe)
+            var localOK = false
+            if !directOK,
+               let s = splitRemoteSpec(params.source),
+               let t = splitRemoteSpec(params.target) {
+                // 中转的前提是本机两端都登得上；源机到不了目标机时，只能靠本机各连一次
+                localOK = self.runProbe(buildLocalProbeCommand(host: s.host, port: s.port)) &&
+                    self.runProbe(buildLocalProbeCommand(host: t.host, port: t.port))
+            }
+            let flavor = rsyncFlavor()
+            let route = resolveDirectRoute(directReachable: directOK, localReachable: localOK,
+                                           resume: params.resume, rsyncFlavor: flavor)
+            DispatchQueue.main.async {
+                self.copyStartBtn?.isEnabled = true
+                self.launchDirect(route: route, cfg: cfg, params: params,
+                                  logPath: logPath, flavor: flavor)
+            }
+        }
+    }
+
+    // 只关心退出码的探测：探测命令自带 ConnectTimeout，正常几秒内返回
+    func runProbe(_ cmdLine: String) -> Bool {
+        guard !cmdLine.isEmpty else { return false }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = ["-c", cmdLine]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
+    }
+
+    // 按选路结果拼命令并启动；顺带把「为什么走这条路」写在状态栏，用户不用猜
+    func launchDirect(route: CopyRoute, cfg: CopyConfig, params: CopyParams,
+                      logPath: String, flavor: RsyncFlavor) {
+        let note = "\(params.source) → \(params.target)"
+
+        switch route {
+        case .unreachable:
+            debugLog("[互拷] 双远端不可达: \(note)")
+            copyStatusLabel.stringValue = "两端都不可达：源机到不了目标机，本机也登不上其中一端（先确认免密与网络）"
+            return
+
+        case .direct:
+            let cmd = buildCopyCommand(cfg: cfg, params: params, rsyncAvailable: flavor != .none,
+                                       logPath: logPath, useProgress2: flavor == .full,
+                                       useLogFile: flavor == .full)
+            if cmd.isEmpty {
+                copyStatusLabel.stringValue = "无法拼接命令，请检查路径格式"
+                return
+            }
+            debugLog("[互拷] 直连（实测通过）: \(cmd)")
+            copyStatusLabel.stringValue = "直连：在源机执行 rsync（源机→目标机免密已实测通过）"
+            launchCommandInTerminal("echo '===== 开始拷贝（直连）====='; " + cmd,
+                                    autoCloseOnSuccess: true, logPath: logPath, startNote: note)
+
+        case .relayResume:
+            let cmd = buildRelayResumeCommand(params: params, logPath: logPath,
+                                              useProgress2: flavor == .full,
+                                              useLogFile: flavor == .full)
             if cmd.isEmpty {
                 copyStatusLabel.stringValue = "中转命令拼装失败，请检查两端路径"
                 return
             }
             let stage = relayStagingDir(params: params)
-            debugLog("[互拷] 续传中转命令: \(cmd)")
-            copyStatusLabel.stringValue = "续传式中转：源机 → 本机暂存 → 目标机（中断后再点一次即从断点继续）"
+            debugLog("[互拷] 续传式中转（直连不通）: \(cmd)")
+            copyStatusLabel.stringValue =
+                "直连不通，已自动改走本机中转（两段 rsync）：源机 → 本机暂存 → 目标机，中断后再点一次即续传"
             launchCommandInTerminal("echo '===== 开始中转（可续传）====='; echo '暂存目录: \(stage.replacingOccurrences(of: "'", with: "'\\''"))'; " + cmd,
                                     autoCloseOnSuccess: true, logPath: logPath, startNote: note)
-            return
-        }
 
-        let cmd = buildRelayCopyCommand(params: params)
-        if cmd.isEmpty {
-            copyStatusLabel.stringValue = "中转命令拼装失败，请检查两端路径"
-            return
+        case .relayTar:
+            let cmd = buildRelayCopyCommand(params: params)
+            if cmd.isEmpty {
+                copyStatusLabel.stringValue = "中转命令拼装失败，请检查两端路径"
+                return
+            }
+            debugLog("[互拷] tar 流中转（直连不通）: \(cmd)")
+            if !params.resume {
+                copyStatusLabel.stringValue = "直连不通，已自动改走本机中转（tar 流）：不占本地磁盘，但未勾「断点续传」故中断要重来"
+            } else {
+                copyStatusLabel.stringValue = "直连不通，已自动改走本机中转（tar 流）：本机无可用 rsync，不占盘但不可续传"
+            }
+            // tar 流没有 --log-file，日志里只有开始/结束与退出码，明细仍在 Terminal 里
+            launchCommandInTerminal("echo '===== 开始中转拷贝 ====='; " + cmd,
+                                    autoCloseOnSuccess: true, logPath: logPath, startNote: note)
         }
-        debugLog("[互拷] 中转命令: \(cmd)")
-        copyStatusLabel.stringValue = params.resume
-            ? "中转中：源机 → 本机 → 目标机（tar 流；本机无 rsync，不能续传）"
-            : "中转中：源机 → 本机 → 目标机（tar 流，不占本地磁盘；勾选「断点续传」可改为可续传模式）"
-        // tar 流没有 --log-file，日志里只有开始/结束与退出码，明细仍在 Terminal 里
-        launchCommandInTerminal("echo '===== 开始中转拷贝 ====='; " + cmd, autoCloseOnSuccess: true,
-                                logPath: logPath, startNote: note)
     }
 
     @objc func launchTool(_ sender: NSButton) {

@@ -299,16 +299,92 @@ func sshListDir(hostSpec: String, path: String) -> (ok: Bool, output: String, er
     return (ok, outStr, errStr)
 }
 
-// 判断本机是否有 rsync（有副作用：会 spawn 子进程；结果通过参数传入 buildCopyCommand 以便测试）
-func hasRsync() -> Bool {
+// —— 本机 rsync 到底能做到什么 ——
+// macOS 自带的 /usr/bin/rsync 已经是 openrsync（自称 2.6.9 兼容）：认 --partial-dir、--bwlimit，
+// 但**不认 --info=progress2，也没有 --log-file**。所以「命令存在」不等于「这堆参数能跑」——
+// 只看 command -v 就拼 3.x 参数，会拼出一条必然报 unrecognized option 的命令，
+// 而且只会在没装 Homebrew rsync 的机器上复现。
+enum RsyncFlavor {
+    case none        // 没装 rsync：退回 scp
+    case openRsync   // 系统自带：能用，但不支持 --info=progress2 / --log-file
+    case full        // GNU rsync 3.x：全支持
+}
+
+// 由 `rsync --version` 的输出判断实现（纯函数，便于断言，不 spawn 进程）
+func parseRsyncFlavor(_ versionOutput: String) -> RsyncFlavor {
+    let t = versionOutput.lowercased()
+    if t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .none }
+    if t.contains("openrsync") { return .openRsync }
+    if t.contains("rsync version") || t.contains("rsync  version") { return .full }
+    // 认不出来的实现按保守处理：功能照跑，只是不加它可能不认的参数
+    return .openRsync
+}
+
+// 探测本机 rsync 实现（有副作用：会 spawn 子进程；结果作为参数传入各拼装函数以便测试）
+func rsyncFlavor() -> RsyncFlavor {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-    p.arguments = ["-c", "command -v rsync >/dev/null 2>&1"]
-    p.standardOutput = FileHandle.nullDevice
+    p.arguments = ["-c", "command -v rsync >/dev/null 2>&1 && rsync --version 2>&1 | head -2"]
+    let out = Pipe()
+    p.standardOutput = out
     p.standardError = FileHandle.nullDevice
-    p.launch()
+    do { try p.run() } catch { return .none }
+    let data = out.fileHandleForReading.readDataToEndOfFile()
     p.waitUntilExit()
-    return p.terminationStatus == 0
+    guard p.terminationStatus == 0 else { return .none }
+    return parseRsyncFlavor(String(data: data, encoding: .utf8) ?? "")
+}
+
+// 本机有没有 rsync（与 `command -v rsync` 同义，保留给「有/没有」的二值判断）
+func hasRsync() -> Bool {
+    rsyncFlavor() != .none
+}
+
+// —— 可达性探测：直连能不能走，只能实测 ——
+// 直拷的前提是「源机 → 目标机」免密，不是「本机 → 两端」。这个前提在界面上看不出来，
+// 也没有配置项可填，所以在源机上跑一次 BatchMode 的 ssh 来验：连不上或要密码就退非 0。
+// 故意不加 StrictHostKeyChecking=accept-new：探测不该往别人的服务器写 known_hosts，
+// 首次连接遇到未知主机键就判为不通 —— 改走中转即可，功能不损失。
+func buildDirectProbeCommand(params: CopyParams) -> String {
+    guard let s = splitRemoteSpec(params.source),
+          let t = splitRemoteSpec(params.target),
+          !s.path.isEmpty, !t.path.isEmpty else {
+        return ""
+    }
+    let opts = "-o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1"
+    // 在源机上执行：先确认它有 rsync（直拷靠它），再 ssh 到目标机验免密。
+    // 两件事任一不成立都判直连不通 —— 都该走中转，而不是让直拷在 Terminal 里报错
+    var inner = "command -v rsync >/dev/null 2>&1 && ssh " + opts
+    if !t.port.isEmpty { inner += " -p \(t.port)" }
+    inner += " " + shellQuote(stripBrackets(t.host)) + " true"
+    var outer = "ssh " + opts
+    if !s.port.isEmpty { outer += " -p \(s.port)" }
+    return outer + " " + shellQuote(stripBrackets(s.host)) + " " + shellQuote(inner)
+}
+
+// 本机能否免密登录某台机器（中转的前提：本机持有两端凭证）
+// host 传 splitRemoteSpec 出来的 user@host（不含端口），端口单独传
+func buildLocalProbeCommand(host: String, port: String = "") -> String {
+    guard !host.isEmpty else { return "" }
+    let hostPart = stripBrackets(splitHostPort(host).0)
+    var cmd = "ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1"
+    if !port.isEmpty { cmd += " -p \(port)" }
+    return cmd + " " + shellQuote(hostPart.isEmpty ? host : hostPart) + " true"
+}
+
+// 双远端最终走哪条路。探测结果由调用方传入（探测要 spawn ssh，不进纯逻辑层）
+enum CopyRoute {
+    case direct       // 两端免密已实测通过：在源机执行 rsync
+    case relayResume  // 直连不通，本机两端都到得了：两段 rsync，中断可续
+    case relayTar     // 同上但没有可用的 rsync，或用户不要续传：tar 流，不占本地磁盘
+    case unreachable  // 本机也到不了其中一端：给明确失败，不静默
+}
+
+func resolveDirectRoute(directReachable: Bool, localReachable: Bool,
+                        resume: Bool, rsyncFlavor: RsyncFlavor) -> CopyRoute {
+    if directReachable { return .direct }
+    guard localReachable else { return .unreachable }
+    return (resume && rsyncFlavor != .none) ? .relayResume : .relayTar
 }
 
 // —— 限速（--bwlimit）——
@@ -362,8 +438,11 @@ func copyLogPath(params: CopyParams, root: String = copyLogRoot()) -> String {
 // 服务器↔服务器直拷：ssh 到源机执行 rsync（避免本机中转）
 // rsyncAvailable：本机是否有 rsync（由调用方用 hasRsync() 探测后传入，保持本函数无副作用可测）
 // 自定义端口：rsync/scp 不支持 user@host:port:path，端口拆出后走 -e "ssh -p N" / scp -P
+// useProgress2 / useLogFile：GNU rsync 才有的两个能力，由调用方按 rsyncFlavor() 传入；
+// 系统自带的 openrsync 两个都不认，传 false 后命令里就不出现，避免拼出跑不通的参数
 func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool,
-                      logPath: String = "") -> String {
+                      logPath: String = "", useProgress2: Bool = true,
+                      useLogFile: Bool = true) -> String {
     let srcRemote = isRemotePath(params.source)
     let dstRemote = isRemotePath(params.target)
 
@@ -375,6 +454,7 @@ func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool,
     let resumeFlags = params.resume ? " --partial --partial-dir=.rsync-partial" : ""
     let bwFlag = bwlimitFlag(params.bwlimitKbps)
     let extraFlags = cfg.defaultFlags.isEmpty ? "" : " " + cfg.defaultFlags.joined(separator: " ")
+    let progressFlag = useProgress2 ? " --info=progress2" : ""
 
     // 服务器↔服务器直拷：ssh 到源机执行 rsync
     if srcRemote && dstRemote {
@@ -384,7 +464,7 @@ func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool,
         }
         // 在源机上跑 rsync；-e ssh 让源机 ssh 到目标机（目标机端口非 22 时须带 -p）
         // 日志不加：命令在源机上跑，本机日志路径在源机不一定存在
-        var inner = "rsync" + recursiveFlag + preserveFlag + resumeFlags + " --info=progress2" + bwFlag + extraFlags
+        var inner = "rsync" + recursiveFlag + preserveFlag + resumeFlags + progressFlag + bwFlag + extraFlags
         if !t.port.isEmpty {
             inner += " -e " + shellQuote("ssh -p \(t.port)")
         }
@@ -400,8 +480,8 @@ func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool,
     // 本机有 rsync：用 rsync（远端侧重写掉端口，端口走 -e "ssh -p N"）
     if rsyncAvailable {
         // --log-file 让 rsync 自己写日志（客户端侧），不经过管道，因此不干扰 ssh 的交互式密码输入
-        let logFlag = logPath.isEmpty ? "" : " --log-file=" + shellQuote(logPath)
-        var base = "rsync" + recursiveFlag + preserveFlag + resumeFlags + " --info=progress2" +
+        let logFlag = (useLogFile && !logPath.isEmpty) ? " --log-file=" + shellQuote(logPath) : ""
+        var base = "rsync" + recursiveFlag + preserveFlag + resumeFlags + progressFlag +
             bwFlag + logFlag + extraFlags
         var srcArg = params.source
         var dstArg = params.target
@@ -541,7 +621,8 @@ func relayStagingDir(params: CopyParams, root: String = relayStagingRoot()) -> S
 // 两段式中转命令：先拉到本机暂存（--partial 断点续传），再推到目标机，成功后清理暂存
 // 与 tar 流的区别：占用本地磁盘（约等于一份源数据），但中断可续、有大文件进度
 func buildRelayResumeCommand(params: CopyParams, root: String = relayStagingRoot(),
-                             logPath: String = "") -> String {
+                             logPath: String = "", useProgress2: Bool = true,
+                             useLogFile: Bool = true) -> String {
     guard let s = splitRemoteSpec(params.source),
           let t = splitRemoteSpec(params.target),
           !s.path.isEmpty, !t.path.isEmpty else {
@@ -554,8 +635,8 @@ func buildRelayResumeCommand(params: CopyParams, root: String = relayStagingRoot
     // --partial-dir 把半截文件留在专属目录里，重跑时 rsync 以它为基底做增量，比 --append-verify 安全
     let resumeFlags = params.resume ? " --partial --partial-dir=.rsync-partial" : ""
     // 两段都写同一个日志文件：rsync 的 --log-file 是追加模式，一次中转的下载段与上传段会接在一起
-    let logFlag = logPath.isEmpty ? "" : " --log-file=" + shellQuote(logPath)
-    let flags = recursiveFlag + preserveFlag + resumeFlags + " --info=progress2" +
+    let logFlag = (useLogFile && !logPath.isEmpty) ? " --log-file=" + shellQuote(logPath) : ""
+    let flags = recursiveFlag + preserveFlag + resumeFlags + (useProgress2 ? " --info=progress2" : "") +
         bwlimitFlag(params.bwlimitKbps) + logFlag
 
     func sshE(_ host: String, _ port: String) -> String {

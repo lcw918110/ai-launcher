@@ -829,6 +829,101 @@ let plainScript = buildCommandScript(cmdLine: "echo hi", pathPrepend: [], autoCl
 expectTrue(!plainScript.contains("mkdir -p"), "logScript: 不传日志路径时不生成日志语句")
 
 // ============================================================
+// 22. rsync 实现识别 / 可达性探测 / 双远端选路
+// 背景：中转不再由用户点按钮，改成「后台测直连，不通自动中转」。
+// 这里把三件前提锁住：rsync 实现要认得出、探测命令要只连主机不带路径、选路要覆盖四种组合
+// ============================================================
+
+// —— rsync 实现：openrsync 不认 --info=progress2 / --log-file，必须与 GNU 区分开 ——
+expectEqual(parseRsyncFlavor("openrsync: protocol version 29\nrsync version 2.6.9 compatible"),
+            RsyncFlavor.openRsync, "parseRsyncFlavor: 系统自带 openrsync 识别为受限实现")
+expectEqual(parseRsyncFlavor("rsync  version 3.5.1  protocol version 33"),
+            RsyncFlavor.full, "parseRsyncFlavor: GNU rsync 3.x 识别为完整实现")
+expectEqual(parseRsyncFlavor("   "), RsyncFlavor.none, "parseRsyncFlavor: 空输出视为没有 rsync")
+expectEqual(parseRsyncFlavor("rsync-like 1.0"),
+            RsyncFlavor.openRsync, "parseRsyncFlavor: 认不出的实现按保守处理（不加它可能不认的参数）")
+
+// —— 直连探测：在源机上套一层 BatchMode 的 ssh，只连主机不碰路径 ——
+let probeParams = CopyParams(source: "user@192.168.1.5:/data/big.iso",
+                             target: "user@192.168.1.6:/data/dst",
+                             recursive: true, preserveAttrs: true, resume: true, hostSpec: "")
+let directProbe = buildDirectProbeCommand(params: probeParams)
+expectTrue(directProbe.hasPrefix("ssh -o BatchMode=yes"),
+           "directProbe: 外层 ssh 走 BatchMode（要密码就判不通，而不是卡住等输入）")
+expectTrue(directProbe.contains("ConnectTimeout=5"), "directProbe: 带超时，探测不能卡住 UI")
+expectTrue(directProbe.contains("'user@192.168.1.5'"), "directProbe: 外层主机被引号包住")
+// 内层命令是「源机上再 ssh 一次到目标机」，作为单个远端命令参数传入，里面的引号必须已转义
+expectTrue(directProbe.contains("ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 '\\''user@192.168.1.6'\\'' true"),
+           "directProbe: 内层 ssh 到目标机且主机参数已转义")
+expectTrue(!directProbe.contains("/data/dst"), "directProbe: 探测不碰目标路径（只验登录）")
+expectTrue(directProbe.contains("command -v rsync"),
+           "directProbe: 顺带验源机有 rsync（源机没有就别硬走直拷）")
+expectTrue(!directProbe.contains("StrictHostKeyChecking"),
+           "directProbe: 不自动接受未知主机键（不往别人的服务器写 known_hosts）")
+expectEqual(buildDirectProbeCommand(params: CopyParams(
+                source: "user@a:2222:/x", target: "user@b:2200:/y",
+                recursive: true, preserveAttrs: true, resume: true, hostSpec: "")).contains("-p 2222"),
+            true, "directProbe: 源机端口透传")
+expectTrue(buildDirectProbeCommand(params: CopyParams(
+                source: "user@a:2222:/x", target: "user@b:2200:/y",
+                recursive: true, preserveAttrs: true, resume: true, hostSpec: "")).contains("-p 2200"),
+           "directProbe: 目标机端口透传给内层 ssh")
+expectEqual(buildDirectProbeCommand(params: CopyParams(
+                source: "/local/a", target: "user@b:/data",
+                recursive: true, preserveAttrs: true, resume: true, hostSpec: "")),
+            "", "directProbe: 非双远端返回空（只有服务器↔服务器才需要判断直连）")
+
+// —— 本机探测：中转的前提是本机两端都登得上 ——
+expectEqual(buildLocalProbeCommand(host: "user@192.168.1.5"),
+            "ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 'user@192.168.1.5' true",
+            "localProbe: 默认端口")
+expectEqual(buildLocalProbeCommand(host: "user@192.168.1.5", port: "2222"),
+            "ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 -p 2222 'user@192.168.1.5' true",
+            "localProbe: 端口在主机前")
+expectTrue(buildLocalProbeCommand(host: "user@[::1]").contains("'user@::1'"),
+           "localProbe: IPv6 去方括号")
+expectEqual(buildLocalProbeCommand(host: ""), "", "localProbe: 空主机返回空")
+
+// —— 选路：直连优先，不通才中转，两端都够不着就明确报错 ——
+expectEqual(resolveDirectRoute(directReachable: true, localReachable: false,
+                               resume: true, rsyncFlavor: .full),
+            CopyRoute.direct, "route: 直连实测通过就走直连（不看本机能否中转）")
+expectEqual(resolveDirectRoute(directReachable: false, localReachable: true,
+                               resume: true, rsyncFlavor: .full),
+            CopyRoute.relayResume, "route: 直连不通 → 可续传中转（勾了续传且本机有 rsync）")
+expectEqual(resolveDirectRoute(directReachable: false, localReachable: true,
+                               resume: false, rsyncFlavor: .full),
+            CopyRoute.relayTar, "route: 未勾续传 → tar 流")
+expectEqual(resolveDirectRoute(directReachable: false, localReachable: true,
+                               resume: true, rsyncFlavor: .none),
+            CopyRoute.relayTar, "route: 本机没 rsync → tar 流（不能拼 rsync 命令）")
+expectEqual(resolveDirectRoute(directReachable: false, localReachable: false,
+                               resume: true, rsyncFlavor: .full),
+            CopyRoute.unreachable, "route: 本机也到不了 → 不可达（不静默失败）")
+
+// —— openrsync 下不能拼 --info=progress2 / --log-file，直连与中转两条路径都要能降下来 ——
+let openParams = CopyParams(source: "/Users/me/data", target: "user@h:/data",
+                            recursive: true, preserveAttrs: true, resume: true, hostSpec: "")
+let openCmd = buildCopyCommand(cfg: cfg, params: openParams, rsyncAvailable: true,
+                               logPath: "/tmp/x.log", useProgress2: false, useLogFile: false)
+expectTrue(!openCmd.contains("--info=progress2"),
+           "openrsync 兼容: 直连命令不带 --info=progress2（否则 unrecognized option）")
+expectTrue(!openCmd.contains("--log-file"),
+           "openrsync 兼容: 直连命令不带 --log-file（openrsync 没有这个参数）")
+expectTrue(openCmd.contains("--partial-dir=.rsync-partial"),
+           "openrsync 兼容: 续传参数保留（openrsync 支持 --partial-dir）")
+
+let openRelay = buildRelayResumeCommand(params: probeParams, root: "/tmp/relay-root",
+                                        logPath: "/tmp/x.log",
+                                        useProgress2: false, useLogFile: false)
+expectEqual(openRelay.components(separatedBy: "--info=progress2").count - 1, 0,
+            "openrsync 兼容: 中转两段都不带 --info=progress2")
+expectEqual(openRelay.components(separatedBy: "--partial-dir").count - 1, 2,
+            "openrsync 兼容: 中转两段各自仍带 --partial-dir（续传不能丢）")
+expectEqual(openRelay.components(separatedBy: "--log-file").count - 1, 0,
+            "openrsync 兼容: 中转两段都不带 --log-file")
+
+// ============================================================
 // 汇总
 // ============================================================
 print("\n======== 测试汇总：\(passCount) 通过，\(failures.count) 失败 ========")
