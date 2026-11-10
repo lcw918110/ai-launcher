@@ -35,7 +35,7 @@ echo "== 1/6 编译 universal 二进制（arm64 + x86_64，最低 macOS $MIN_OS�
 ARCHS=()
 for arch in arm64 x86_64; do
   swiftc -O -target "${arch}-apple-macos${MIN_OS}" \
-         "$ROOT/src/Core.swift" "$ROOT/src/main.swift" \
+         "$ROOT"/src/*.swift \
          -o "$CATALOG/bin-$arch"
   ARCHS+=("$CATALOG/bin-$arch")
   echo "  $arch 完成"

@@ -3,6 +3,19 @@
 版本号遵循「主版本.次版本.修订号」，1.0 之前每次成批改动升次版本号。安装包版本以 `src/Info.plist` 的
 `CFBundleShortVersionString` 为准，构建脚本原样拷入 `.app`。
 
+## 0.4.8 — 2026-11-10
+
+没有新功能，也没有用户可见的变化：把 1391 行的 `main.swift` 拆成 6 个文件，顺手把两个 action 升到 node24。
+
+- **为什么拆**：`Core.swift` 早就是纯逻辑层，UI 却全挤在一个文件里。上次加「结果回收 + 工具菜单」时，改动分散在 6 个不相邻的位置，改完要靠肉眼确认没漏；再往上堆只会更难。
+- **怎么拆**：`main.swift`（入口，只剩 `NSApplication` 启动与 `--selftest` 开关）、`AppShell.swift`（写临时 `.command`、`open` Terminal、旧文件清理、目录选择、`FlippedView`）、`AppDelegate.swift`（存储属性、生命周期、菜单、窗口构建、自测）、`CopyForm.swift`（表单构建、免密联想、远端浏览、表单快照）、`CopyRunner.swift`（参数校验、直连探测选路、启动、结果回收）、`SuggestionController.swift`（候选框）。
+- **仍是同一个模块**：Swift 的 extension 不能加存储属性，所以 `AppDelegate` 的属性只能留在 `AppDelegate.swift`，互拷方法以两个 extension 的形式分出去；相应地 `buildCopySection`、`reloadSSHHostsIfNeeded` 从 `private` 放宽到 internal（`private` 在 Swift 里是文件级）。
+- **没搬丢的证明**：把拆分前后所有非空行做多重集差，差异只有「原文件头注释被改写成各文件的头」和上面那两处 `private`，其余 1278 行一字不差。
+- **构建脚本不再数文件**：`build.sh`、`package.sh`、CI 都改成 `swiftc -O src/*.swift`，以后加文件不用回来改三处。`test.sh` 仍只编 `Core.swift` + `tests/main.swift`，不牵扯 AppKit。
+- **CI action 升级**：GitHub 已把 Node 20 标为弃用，`actions/checkout@v4 → @v7`、`softprops/action-gh-release@v2 → @v3`（后者 v3 的发布说明只有一句：runtime 从 Node 20 移到 24）。
+- **验证**：断言仍是 362 条全绿；`build.sh` 编译安装 + ad-hoc 签名通过；GUI 冒烟（`--selftest --no-launch`）确认互拷控件、工具菜单、滚动布局、联想候选框都正常；`package.sh` 跑通 universal（arm64 + x86_64）DMG 与 zip。
+- **文档**：`docs/03` 换成分文件后的分层表并说明「为什么跨文件方法不能 private」；`docs/05`/`README`/`docs/07` 的编译命令统一成 `src/*.swift`；`docs/06` 关闭 G-9。
+
 ## 0.4.7 — 2026-11-10
 
 拷贝结果现在会自己回到窗口上，`~/Library` 里那两个目录也有菜单入口了。

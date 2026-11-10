@@ -62,14 +62,18 @@ xattr -dr com.apple.quarantine "/Applications/AI终端启动器.app"
 | 路径 | 说明 |
 |------|------|
 | `src/Core.swift` | 纯逻辑层（仅 Foundation）：连接串解析、路径/主机拆分、互拷命令拼装、配置读写、`~/.ssh/config` 解析、Terminal 启动脚本生成 |
-| `src/main.swift` | UI 层（AppKit）：窗口与滚动视图、按钮、弹窗、联想候选框、Terminal 启动 |
+| `src/main.swift` | 入口：`NSApplication` 启动 + `--selftest` 开关 |
+| `src/AppShell.swift` | 无状态 UI 辅助：临时 `.command` 脚本、`open` Terminal、目录选择 |
+| `src/AppDelegate.swift` | 窗口、滚动视图、菜单（含「工具」）、生命周期 |
+| `src/CopyForm.swift` / `src/CopyRunner.swift` | 互拷表单（含联想与远端浏览）/ 互拷执行（探测选路与结果回收） |
+| `src/SuggestionController.swift` | 免密主机候选框 |
 | `tests/main.swift` | Core 全量断言用例（纯命令行，无 GUI 副作用，条数见 [docs/05](docs/05-测试与验收.md)） |
 | `scripts/build.sh` / `scripts/test.sh` | 编译安装 / 跑测试 |
 | `scripts/check-docs.sh` | 校验文档与代码一致（版本号、断言数），CI 必跑 |
 | `scripts/package.sh` / `scripts/sign-app.sh` | 打 DMG 与 zip（universal）/ 给 `.app` 签名（Developer ID 或 ad-hoc） |
 | `scripts/install-remote.sh` | 给他人用的一键安装（下载 → 装 → 清 quarantine） |
 | `.github/workflows/ci.yml` / `release.yml` | CI：编译 + 跑测试 / 推 tag 自动打包发布 |
-| `LICENSE` / `CHANGELOG.md` | MIT 许可 / 版本改动记录（当前 0.4.7） |
+| `LICENSE` / `CHANGELOG.md` | MIT 许可 / 版本改动记录（当前 0.4.8） |
 
 ## 测试
 
@@ -82,7 +86,7 @@ xattr -dr com.apple.quarantine "/Applications/AI终端启动器.app"
 GUI 冒烟（可选；加 `--no-launch` 不会弹 Terminal）：
 
 ```bash
-swiftc -O src/Core.swift src/main.swift -o /tmp/ai-launcher-selftest
+swiftc -O src/*.swift -o /tmp/ai-launcher-selftest
 /tmp/ai-launcher-selftest --selftest --no-launch
 ```
 

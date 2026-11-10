@@ -2,8 +2,8 @@
 # 从本仓源码编译，安装到 ~/Applications/AI终端启动器.app（安装产物，不进 Git）
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SRC="$ROOT/src/main.swift"
-CORE="$ROOT/src/Core.swift"
+# 整个 src/ 一起编译：新增 .swift 文件不用回来改这里（顺序对 swiftc 无影响）
+SOURCES=("$ROOT"/src/*.swift)
 APP_NAME="AI终端启动器"
 APP="$HOME/Applications/$APP_NAME.app"
 BIN="$APP/Contents/MacOS/$APP_NAME"
@@ -13,7 +13,7 @@ PLIST_DST="$APP/Contents/Info.plist"
 LEGACY_NAME="AI启动器菜单栏"
 LEGACY_APP="$HOME/Applications/$LEGACY_NAME.app"
 
-for f in "$CORE" "$SRC"; do
+for f in "${SOURCES[@]}"; do
   if [[ ! -f "$f" ]]; then
     echo "找不到源码: $f" >&2
     exit 1
@@ -24,7 +24,7 @@ mkdir -p "$APP/Contents/MacOS"
 # 每次构建都覆盖 Info.plist，保证源码里的 plist 改动能同步到已安装的 .app
 cp "$PLIST_SRC" "$PLIST_DST"
 
-swiftc -O "$CORE" "$SRC" -o "$BIN"
+swiftc -O "${SOURCES[@]}" -o "$BIN"
 chmod +x "$BIN"
 
 # 每次覆盖二进制后旧签名即失效，必须重签。
