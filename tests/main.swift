@@ -959,6 +959,72 @@ if let d = memJSON, let m = decodeCopyMemory(d) {
 }
 
 // ============================================================
+// 结果回收：从日志新增内容里读退出码
+// 拷贝跑在 Terminal 里，app 拿不到 terminationStatus，只能读脚本层那行「结束，退出码 N」
+// ============================================================
+let noEnd = parseCopyLogOutcome("[2026-11-10 10:00:00] 开始 a → b\n")
+expectTrue(!noEnd.finished, "parseCopyLogOutcome: 只有开始行时不算结束")
+expectEqual(noEnd.exitCode, nil, "parseCopyLogOutcome: 未结束时没有退出码")
+
+let okEnd = parseCopyLogOutcome("[2026-11-10 10:00:00] 开始 a → b\n[2026-11-10 10:00:09] 结束，退出码 0\n")
+expectTrue(okEnd.finished, "parseCopyLogOutcome: 有结束行即结束")
+expectEqual(okEnd.exitCode, 0, "parseCopyLogOutcome: 退出码 0 解析正确")
+
+let failEnd = parseCopyLogOutcome("[2026-11-10 10:00:09] 结束，退出码 23\n")
+expectEqual(failEnd.exitCode, 23, "parseCopyLogOutcome: 非 0 退出码（23 = rsync 部分文件未传）")
+
+// 同一任务续传会追加多段，本次结果必须是最后一段
+let twice = parseCopyLogOutcome("""
+[2026-11-10 10:00:09] 结束，退出码 0
+[2026-11-10 10:05:00] 开始 a → b
+[2026-11-10 10:05:03] 结束，退出码 12
+""")
+expectEqual(twice.exitCode, 12, "parseCopyLogOutcome: 多段日志取最后一次的退出码")
+
+// rsync 明细里没有这个措辞，不能误判
+let rsyncDetail = parseCopyLogOutcome("sent 1,234 bytes  received 56 bytes  2,580.00 bytes/sec\ntotal size is 1,024\n")
+expectTrue(!rsyncDetail.finished, "parseCopyLogOutcome: rsync 明细不会被当成结束")
+
+// —— 只读新增内容：读全量会把上一次的结束行当成这次的结果 ——
+let tailDir = NSTemporaryDirectory() + "ai-launcher-tail-\(getpid())"
+try? FileManager.default.createDirectory(atPath: tailDir, withIntermediateDirectories: true)
+let tailFile = tailDir + "/t.log"
+try? "第一段\n".data(using: .utf8)?.write(to: URL(fileURLWithPath: tailFile))
+
+let first = readNewText(path: tailFile, fromOffset: 0)
+expectEqual(first.text, "第一段\n", "readNewText: 从 0 读能拿到全部内容")
+expectEqual(first.offset, Int64(first.text.utf8.count), "readNewText: 返回的 offset 是文件大小")
+
+if let h = FileHandle(forWritingAtPath: tailFile) {
+    h.seekToEndOfFile()
+    h.write("第二段\n".data(using: .utf8)!)
+    try? h.close()
+}
+let second = readNewText(path: tailFile, fromOffset: first.offset)
+expectEqual(second.text, "第二段\n", "readNewText: 带 offset 时只返回新增内容（旧结束行不干扰）")
+
+// 文件被清空重建：offset 比文件还大，退回从 0 读
+try? "重建\n".data(using: .utf8)?.write(to: URL(fileURLWithPath: tailFile))
+let third = readNewText(path: tailFile, fromOffset: 9_999)
+expectEqual(third.text, "重建\n", "readNewText: offset 超过文件大小时从 0 重读")
+
+let missing = readNewText(path: tailDir + "/不存在.log", fromOffset: 0)
+expectEqual(missing.text, "", "readNewText: 文件不存在时返回空串不崩")
+
+// —— 体积文案与目录占用（「清除中转暂存」要先把占用说清楚）——
+expectEqual(humanSize(0), "0 B", "humanSize: 0")
+expectEqual(humanSize(1536), "1.5 KB", "humanSize: 1536 → 1.5 KB")
+expectEqual(humanSize(5 * 1024 * 1024), "5.0 MB", "humanSize: 5 MiB → 5.0 MB")
+
+let sizeDir = tailDir + "/stage"
+try? FileManager.default.createDirectory(atPath: sizeDir, withIntermediateDirectories: true)
+try? Data(count: 100).write(to: URL(fileURLWithPath: sizeDir + "/a"))
+try? Data(count: 200).write(to: URL(fileURLWithPath: sizeDir + "/b"))
+expectEqual(directorySizeBytes(sizeDir), 300, "directorySizeBytes: 递归统计两个文件的字节数")
+expectEqual(directorySizeBytes(tailDir + "/no-such-dir"), 0, "directorySizeBytes: 不存在时返回 0")
+try? FileManager.default.removeItem(atPath: tailDir)
+
+// ============================================================
 // 汇总
 // ============================================================
 print("\n======== 测试汇总：\(passCount) 通过，\(failures.count) 失败 ========")

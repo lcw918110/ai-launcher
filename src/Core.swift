@@ -431,6 +431,75 @@ func copyLogPath(params: CopyParams, root: String = copyLogRoot()) -> String {
     return root + "/" + name + "-" + shortHash(params.source + "|" + params.target) + ".log"
 }
 
+// —— 拷贝结果回收 ——
+// 拷贝跑在 Terminal 里（真 TTY 才能交互输密码），app 拿不到 Process 的退出码，
+// 只能读脚本层写进日志的那行「结束，退出码 N」。所以「进行中…」不能一直挂着：
+// 轮询新增内容，看到结束行就把成功/失败写回状态栏，用户切走再回来也能知道结果。
+
+struct CopyOutcome {
+    var finished: Bool
+    var exitCode: Int?
+}
+
+// 同一任务多次运行会追加多条结束行，取最后一条；rsync 明细里不会出现这个措辞
+func parseCopyLogOutcome(_ text: String) -> CopyOutcome {
+    var lastExit: Int?
+    for raw in text.components(separatedBy: "\n") {
+        let line = raw.trimmingCharacters(in: .whitespaces)
+        guard let r = line.range(of: "结束，退出码 ") else { continue }
+        let digits = line[r.upperBound...].prefix { $0.isNumber }
+        if let v = Int(digits) { lastExit = v }
+    }
+    return CopyOutcome(finished: lastExit != nil, exitCode: lastExit)
+}
+
+// 只读「本次运行新增」的内容。
+// 必须记 offset：日志是追加的，读全量会把上一次运行留下的结束行当成这一次的结果，
+// 出现「刚点下去就报失败」这种假象。文件被清空/重建时退回从 0 读。
+func readNewText(path: String, fromOffset: Int64, maxBytes: Int = 65_536) -> (text: String, offset: Int64) {
+    let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+    guard let size = (attrs?[.size] as? NSNumber)?.int64Value else {
+        return ("", fromOffset)          // 日志还没建出来（脚本刚启动），下次再看
+    }
+    var start = max(0, fromOffset)
+    if size < start { start = 0 }
+    if size - start > Int64(maxBytes) { start = size - Int64(maxBytes) }
+    guard size > start, let fh = FileHandle(forReadingAtPath: path) else {
+        return ("", size)
+    }
+    defer { try? fh.close() }
+    try? fh.seek(toOffset: UInt64(start))
+    let data = fh.readDataToEndOfFile()
+    // 从中间截断可能切断多字节字符，用容错解码而不是失败返回空串
+    return (String(decoding: data, as: UTF8.self), size)
+}
+
+// 体积文案（暂存目录占用、给用户看，不参与计算）
+func humanSize(_ bytes: Int64) -> String {
+    if bytes < 1024 { return "\(bytes) B" }
+    let units = ["KB", "MB", "GB", "TB"]
+    var v = Double(bytes) / 1024
+    var i = 0
+    while v >= 1024 && i < units.count - 1 { v /= 1024; i += 1 }
+    return String(format: "%.1f %@", v, units[i])
+}
+
+// 目录占用（递归；软链接不跟随，避免统计到别处或循环）
+func directorySizeBytes(_ path: String) -> Int64 {
+    let fm = FileManager.default
+    guard let en = fm.enumerator(atPath: path) else { return 0 }
+    var total: Int64 = 0
+    for case let rel as String in en {
+        let full = path + "/" + rel
+        guard let a = try? fm.attributesOfItem(atPath: full),
+              let type = a[.type] as? FileAttributeType, type != .typeDirectory,
+              type != .typeSymbolicLink,
+              let n = a[.size] as? NSNumber else { continue }
+        total += n.int64Value
+    }
+    return total
+}
+
 
 // 拼接互拷命令。返回命令行字符串
 // logPath：rsync --log-file 的落点（空串不加）。只在「本机发起」的 rsync 上加；

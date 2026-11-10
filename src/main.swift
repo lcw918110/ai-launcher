@@ -201,6 +201,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var copyBwlimitField: NSTextField!   // 限速（MB/s，空 = 不限速）
     var copyStatusLabel: NSTextField!
     var copyStartBtn: NSButton?          // 探测直连期间临时置灰，避免连点重复发起
+    // 结果回收：拷贝在 Terminal 里跑，app 只能靠轮询日志新增内容得知退出码
+    var outcomeTimer: Timer?
+    var outcomeLogPath = ""
+    var outcomeOffset: Int64 = 0
+    var outcomeBaseStatus = ""           // 轮询期间保留「走的哪条路」这句，只在其后追加已运行时长
+    var outcomeStartedAt = Date()
     var copyPresetPopup: NSPopUpButton!   // 互拷预设（config 的 copy.hosts）
     var copyHosts: [CopyHostConfig] = []
     var contentStack: NSStackView!        // 滚动视图里的内容栈（自测与刷新用）
@@ -244,7 +250,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         mainMenu.addItem(editMenuItem)
 
+        // 「工具」：出问题时的入口都放这儿。日志与暂存目录都在 ~/Library 深处，
+        // 让用户自己去 Finder 里翻等于没有这个功能。
+        let toolMenuItem = NSMenuItem()
+        let toolMenu = NSMenu(title: "工具")
+        toolMenuItem.submenu = toolMenu
+        func addToolItem(_ title: String, _ sel: Selector) {
+            let item = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+            item.target = self
+            toolMenu.addItem(item)
+        }
+        addToolItem("打开日志目录", #selector(openLogDir(_:)))
+        addToolItem("打开中转暂存目录", #selector(openRelayStagingDir(_:)))
+        addToolItem("清除中转暂存…", #selector(clearRelayStaging(_:)))
+        toolMenu.addItem(.separator())
+        addToolItem("打开配置文件", #selector(openConfigFile(_:)))
+        mainMenu.addItem(toolMenuItem)
+
         NSApp.mainMenu = mainMenu
+    }
+
+    // —— 「工具」菜单：把 ~/Library 里的两个目录和一键清理摆到菜单上 ——
+    @objc func openLogDir(_ sender: Any) {
+        let root = copyLogRoot()
+        try? FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(URL(fileURLWithPath: root))
+    }
+
+    @objc func openRelayStagingDir(_ sender: Any) {
+        let root = relayStagingRoot()
+        try? FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(URL(fileURLWithPath: root))
+    }
+
+    // 暂存目录平时是空的（中转成功会自动清），留着的是「中断了还没续完」的；清之前把占用和后果说清楚
+    @objc func clearRelayStaging(_ sender: Any) {
+        let root = relayStagingRoot()
+        let bytes = directorySizeBytes(root)
+        let alert = NSAlert()
+        if bytes == 0 {
+            alert.messageText = "中转暂存是空的"
+            alert.informativeText = "\(root)\n\n中转成功时程序会自动清理暂存；留下的只可能是中断未续完的任务。"
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+            return
+        }
+        alert.messageText = "清除中转暂存？"
+        alert.informativeText = "将删除 \(humanSize(bytes))：\(root)\n\n这是未完成的中转留下的一半数据，删掉后这些任务下次要从头传。"
+        alert.addButton(withTitle: "清除")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let ok = (try? FileManager.default.removeItem(atPath: root)) != nil
+        copyStatusLabel?.stringValue = ok
+            ? "已清除中转暂存（释放 \(humanSize(bytes))）"
+            : "清除失败，可手动删除：\(root)"
+    }
+
+    @objc func openConfigFile(_ sender: Any) {
+        ensureConfigExists()
+        NSWorkspace.shared.open(URL(fileURLWithPath: configPath))
     }
 
     // —— 自测：模拟点击第一个启动按钮，验证完整链路 ——
@@ -278,6 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         debugLog("[自测] 窗口内容在滚动视图内 = \(window?.contentView is NSScrollView) 可缩放 = \(window?.styleMask.contains(.resizable) ?? false)")
         debugLog("[自测] 配置 PATH 前缀 = \(loadPathPrepend().joined(separator: ":"))")
         debugLog("[自测] 互拷预设主机 = \(copyHosts.map { $0.spec }.joined(separator: ","))")
+        debugLog("[自测] 工具菜单（日志/暂存/配置）存在 = \(NSApp.mainMenu?.items.contains { $0.submenu?.title == "工具" } ?? false)")
 
         // 滚动布局是否真的生效：文档高度 vs 可视高度
         if let scroll = window?.contentView as? NSScrollView {
@@ -313,7 +378,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         // 覆盖连接串解析、方向推导、命令拼装、远端路径参数、填充决策、配置/免密主机解析。
         // 此处仅保留 GUI 存在性检查与模拟点击，验证界面链路。
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
+        // --selftest-copy：真跑一次拷贝，验证「结果回收」把退出码写回状态栏。
+        // 这条链路没法用断言覆盖（要 Terminal + RunLoop），只能这样冒烟；
+        // 只在显式带该参数时触发，正常启动与普通 --selftest 都不会拷贝任何东西。
+        if CommandLine.arguments.contains("--selftest-copy") {
+            if let m = loadCopyMemory() {
+                copySourceField.stringValue = m.source
+                copyTargetField.stringValue = m.target
+                copyResumeCheck.state = m.resume ? .on : .off
+                debugLog("[自测] 拷贝冒烟: \(m.source) → \(m.target)")
+                startCopy(self)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 12.0) { [weak self] in
+                    debugLog("[自测] 状态栏 = \(self?.copyStatusLabel?.stringValue ?? "nil")")
+                }
+            } else {
+                debugLog("[自测] 拷贝冒烟跳过：没有 last-copy.json")
+            }
+        }
+
+        // 拷贝冒烟要多等一轮，否则状态栏还没回写就退出了
+        let quitAfter: Double = CommandLine.arguments.contains("--selftest-copy") ? 14.0 : 5.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + quitAfter) {
             debugLog("[自测] 结束，退出")
             NSApp.terminate(nil)
         }
@@ -1058,6 +1143,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         let fullCmd = "echo '===== 开始拷贝 ====='; " + cmd
         launchCommandInTerminal(fullCmd, autoCloseOnSuccess: true,
                                 logPath: logPath, startNote: "\(params.source) → \(params.target)")
+        beginOutcomeWatch(logPath: logPath)
+    }
+
+    // 轮询日志新增内容，把退出码写回状态栏。
+    // 拷贝跑在 Terminal 里（真 TTY 才能交互输密码），app 拿不到 Process 的 terminationStatus，
+    // 只能读脚本层写的那行「结束，退出码 N」；否则状态栏会永远停在「进行中…」。
+    func beginOutcomeWatch(logPath: String) {
+        outcomeTimer?.invalidate()
+        outcomeLogPath = logPath
+        // 从当前文件大小起算：同一任务的日志是追加的，读全量会把上一次的结束行当成这次的结果
+        let attrs = try? FileManager.default.attributesOfItem(atPath: logPath)
+        outcomeOffset = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        outcomeBaseStatus = copyStatusLabel?.stringValue ?? ""
+        outcomeStartedAt = Date()
+        let t = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in self?.pollCopyOutcome() }
+        // .common：滚动窗口时 RunLoop 处于 tracking 模式，默认模式下的 timer 不触发
+        RunLoop.main.add(t, forMode: .common)
+        outcomeTimer = t
+        debugLog("[互拷] 开始回收结果: \(logPath) 起始 offset=\(outcomeOffset)")
+    }
+
+    func stopOutcomeWatch() {
+        outcomeTimer?.invalidate()
+        outcomeTimer = nil
+        outcomeLogPath = ""
+    }
+
+    func pollCopyOutcome() {
+        guard !outcomeLogPath.isEmpty else { stopOutcomeWatch(); return }
+        let r = readNewText(path: outcomeLogPath, fromOffset: outcomeOffset)
+        outcomeOffset = r.offset
+        let outcome = parseCopyLogOutcome(r.text)
+        let name = (outcomeLogPath as NSString).lastPathComponent
+
+        if outcome.finished, let code = outcome.exitCode {
+            stopOutcomeWatch()
+            if code == 0 {
+                copyStatusLabel?.stringValue = "✅ 拷贝完成（退出码 0）· 日志：\(name)"
+            } else {
+                copyStatusLabel?.stringValue = "❌ 拷贝失败（退出码 \(code)）· 菜单「工具 → 打开日志目录」看明细 · 日志：\(name)"
+            }
+            debugLog("[互拷] 结果回收: 退出码 \(code) 日志 \(name)")
+            return
+        }
+
+        // 给个时间感，否则长时间只有「进行中…」分不清是慢还是卡死；超过 6 小时不再轮询
+        let secs = Int(Date().timeIntervalSince(outcomeStartedAt))
+        if secs > 6 * 3600 { stopOutcomeWatch(); return }
+        copyStatusLabel?.stringValue = outcomeBaseStatus + " · 已运行 \(secs)s"
     }
 
     // 记住这次任务：续传要求「源/目标不变、再点一次」，app 重启后要能自动回填
@@ -1137,6 +1271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             copyStatusLabel.stringValue = "直连：在源机执行 rsync（源机→目标机免密已实测通过）"
             launchCommandInTerminal("echo '===== 开始拷贝（直连）====='; " + cmd,
                                     autoCloseOnSuccess: true, logPath: logPath, startNote: note)
+            beginOutcomeWatch(logPath: logPath)
 
         case .relayResume:
             let cmd = buildRelayResumeCommand(params: params, logPath: logPath,
@@ -1152,6 +1287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
                 "直连不通，已自动改走本机中转（两段 rsync）：源机 → 本机暂存 → 目标机，中断后再点一次即续传"
             launchCommandInTerminal("echo '===== 开始中转（可续传）====='; echo '暂存目录: \(stage.replacingOccurrences(of: "'", with: "'\\''"))'; " + cmd,
                                     autoCloseOnSuccess: true, logPath: logPath, startNote: note)
+            beginOutcomeWatch(logPath: logPath)
 
         case .relayTar:
             let cmd = buildRelayCopyCommand(params: params)
@@ -1168,6 +1304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             // tar 流没有 --log-file，日志里只有开始/结束与退出码，明细仍在 Terminal 里
             launchCommandInTerminal("echo '===== 开始中转拷贝 ====='; " + cmd,
                                     autoCloseOnSuccess: true, logPath: logPath, startNote: note)
+            beginOutcomeWatch(logPath: logPath)
         }
     }
 
