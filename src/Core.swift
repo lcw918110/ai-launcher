@@ -740,6 +740,15 @@ func sshConfigPath() -> String {
     NSHomeDirectory() + "/.ssh/config"
 }
 
+// 写 JSON 统一走这里：不带 withoutEscapingSlashes 时，JSONSerialization 会把每个 "/" 写成 "\/"，
+// 而这个文件里几乎全是 macOS 路径（/Users/...），手改时就变成 "\/Users\/me\/git\/a"，既难读又容易改错。
+// 两种写法是等价的 JSON，解析结果完全一样，纯粹是可读性问题。
+// 注：只有程序自己写出的文件受影响，手工编辑保存的不会带转义。
+func encodeJSON(_ obj: Any) -> Data? {
+    try? JSONSerialization.data(withJSONObject: obj,
+                                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+}
+
 func defaultConfigJSON() -> [String: Any] {
     // 缺省配置用占位路径（不携带任何本机/内网信息），首次启动写出后由用户自行修改
     return [
@@ -763,7 +772,7 @@ func ensureConfigExists(path: String = configPath) {
     let dir = (path as NSString).deletingLastPathComponent
     try? manager.createDirectory(atPath: dir, withIntermediateDirectories: true)
     if !manager.fileExists(atPath: path) {
-        if let data = try? JSONSerialization.data(withJSONObject: defaultConfigJSON(), options: [.prettyPrinted, .sortedKeys]) {
+        if let data = encodeJSON(defaultConfigJSON()) {
             try? data.write(to: URL(fileURLWithPath: path))
         }
     }
@@ -833,7 +842,7 @@ func encodeCopyMemory(_ m: CopyMemory) -> Data? {
         "resume": m.resume,
         "bwlimitMBps": m.bwlimitMBps,
     ]
-    return try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys])
+    return encodeJSON(dict)
 }
 
 // 容错：缺字段用缺省值；源和目标都为空视为「没有记录」（避免回填一个空壳）

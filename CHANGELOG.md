@@ -13,7 +13,8 @@
 - **不在别人服务器上留指纹**：探测故意**不加** `StrictHostKeyChecking=accept-new`，首次连接遇未知主机键就判不通（改走中转，功能不损失）。
 - **顺带修一个只在别人机器上复现的隐患**：`hasRsync()` 原来只判「命令存在」，而 macOS 15 起 `/usr/bin/rsync` 是 openrsync —— 本机实测 `rsync: unrecognized option '--info=progress2'`，也不支持 `--log-file`。新增 `RsyncFlavor`（`none` / `openRsync` / `full`），`buildCopyCommand` 与 `buildRelayResumeCommand` 按能力决定是否拼这两个参数（`--partial-dir` 一律保留，续传不能丢），状态栏会提示「系统自带 openrsync」。
 - **UI**：删掉「经本机中转」按钮与 `startRelayCopy`；探测期间「开始拷贝」置灰防连点，状态栏显示「检测直连：源机 → 目标机 …」，出结果后写清本次走法。
-- **测试 311 → 340 条**：`parseRsyncFlavor`（openrsync / GNU / 空 / 认不出的实现）、`buildDirectProbeCommand`（BatchMode、超时、内层引号转义、端口透传、不含路径、不写 StrictHostKeyChecking、源机 rsync 前置）、`buildLocalProbeCommand`（端口位置、IPv6 去括号、空主机）、`resolveDirectRoute` 四态、openrsync 下两个拼装函数是否漏参数。
+- **测试 311 → 345 条**：`parseRsyncFlavor`（openrsync / GNU / 空 / 认不出的实现）、`buildDirectProbeCommand`（BatchMode、超时、内层引号转义、端口透传、不含路径、不写 StrictHostKeyChecking、源机 rsync 前置）、`buildLocalProbeCommand`（端口位置、IPv6 去括号、空主机）、`resolveDirectRoute` 四态、openrsync 下两个拼装函数是否漏参数。
+- **配置写出不再转义斜杠**：`JSONSerialization` 默认把每个 `/` 写成 `\/`，而这个文件里几乎全是 macOS 路径，首次生成的 `config.json` 就是 `"\/Users\/me\/git\/a"`，手改时既难读又容易漏改。新增 `encodeJSON`（`.withoutEscapingSlashes`），`ensureConfigExists` 与 `encodeCopyMemory` 统一切过去。两种写法是等价 JSON，老文件解析不受影响，可自行把 `\/` 换成 `/`。
 - **实测**：容器 sshd 三态验证 —— 源机有 rsync 且免密 → `rc=0`（0.29s 判直连）；卸掉 rsync → `rc=127`（判不通 → 中转）；目标不可达 → `rc=255`（5.0s 超时退出，不卡 UI）。
 
 ## 0.4.5 — 2026-10-31

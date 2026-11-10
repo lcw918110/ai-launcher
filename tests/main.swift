@@ -924,6 +924,41 @@ expectEqual(openRelay.components(separatedBy: "--log-file").count - 1, 0,
             "openrsync 兼容: 中转两段都不带 --log-file")
 
 // ============================================================
+// 写出的 JSON 不转义斜杠（配置文件可读性）
+// JSONSerialization 默认把 "/" 写成 "\/"，而 config.json 里几乎全是 macOS 路径，
+// 手改时变成 "\/Users\/me\/git\/a"。两种写法等价，但可读性差很多。
+// ============================================================
+let cfgJSON = encodeJSON(["dirs": ["/Users/me/git/a", "/Users/me/git/b"]])
+if let d = cfgJSON, let text = String(data: d, encoding: .utf8) {
+    expectTrue(!text.contains("\\/"), "encodeJSON: 不把 / 转义成 \\/（否则手改配置难读）")
+    expectTrue(text.contains("\"/Users/me/git/a\""), "encodeJSON: 路径原样写出（前引号紧跟 /）")
+} else {
+    expectTrue(false, "encodeJSON: 能序列化出数据")
+}
+if let d = cfgJSON, let back = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+    expectEqual((back["dirs"] as? [String] ?? []).joined(separator: ","),
+                "/Users/me/git/a,/Users/me/git/b", "encodeJSON: 不转义的写法往返后路径一致")
+} else {
+    expectTrue(false, "encodeJSON: 输出能被 JSONSerialization 读回")
+}
+
+// last-copy.json 里也只有路径，同一个坑，一并约束
+let memJSON = encodeCopyMemory(CopyMemory(source: "/Users/me/a", target: "u@10.0.0.1:/data/b",
+                                          recursive: true, preserveAttrs: true, resume: true,
+                                          bwlimitMBps: ""))
+if let d = memJSON, let text = String(data: d, encoding: .utf8) {
+    expectTrue(!text.contains("\\/"), "encodeCopyMemory: 源/目标路径不转义斜杠")
+} else {
+    expectTrue(false, "encodeCopyMemory: 能序列化出数据")
+}
+// 不转义之后仍要能读回，且分不清「本地/远端」的值不能丢
+if let d = memJSON, let m = decodeCopyMemory(d) {
+    expectEqual(m.target, "u@10.0.0.1:/data/b", "encodeCopyMemory: 往返后远端目标串一致")
+} else {
+    expectTrue(false, "encodeCopyMemory: 输出能被 decodeCopyMemory 读回")
+}
+
+// ============================================================
 // 汇总
 // ============================================================
 print("\n======== 测试汇总：\(passCount) 通过，\(failures.count) 失败 ========")
