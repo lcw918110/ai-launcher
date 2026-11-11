@@ -985,6 +985,26 @@ expectEqual(twice.exitCode, 12, "parseCopyLogOutcome: 多段日志取最后一�
 let rsyncDetail = parseCopyLogOutcome("sent 1,234 bytes  received 56 bytes  2,580.00 bytes/sec\ntotal size is 1,024\n")
 expectTrue(!rsyncDetail.finished, "parseCopyLogOutcome: rsync 明细不会被当成结束")
 
+// —— 「开始」行 = 脚本真的执行了 ——
+// `.command` 交给 Terminal 是单向通道：open 与 NSWorkspace 的 completionHandler 都只回报
+// 「请求已交给 Terminal」（实测 error=nil），文稿被拦时也一样。所以只能由脚本自己报。
+expectTrue(noEnd.started, "parseCopyLogOutcome: 读到开始行即 started（脚本确实跑起来了）")
+expectTrue(okEnd.started, "parseCopyLogOutcome: 开始+结束时 started 仍为真")
+expectTrue(!failEnd.started, "parseCopyLogOutcome: 只有结束行时 started 为假（读到的是上一次运行的后半段）")
+expectTrue(twice.started, "parseCopyLogOutcome: 多段日志里任意一段有开始行即 started")
+expectTrue(!rsyncDetail.started, "parseCopyLogOutcome: rsync 明细不会被当成开始")
+
+// 只有「[时间] 」开头的才是脚本层标记；rsync 自己的行是 "2026/11/11 22:01:07 [14720] …"
+let looksLikeStart = parseCopyLogOutcome("2026/11/11 22:01:07 [14720] 开始 处理 xx\n")
+expectTrue(!looksLikeStart.started, "parseCopyLogOutcome: 不以 [ 开头的行不算开始（避免 rsync 明细误判）")
+
+// 脚本产物必须真的写出「开始」行——否则上面的 started 永远不会为真
+let scriptForStart = buildCommandScript(cmdLine: "true", pathPrepend: [], autoCloseOnSuccess: false,
+                                        logPath: "/tmp/_ai_start_probe.log", startNote: "a → b")
+expectTrue(scriptForStart.contains("开始"), "buildCommandScript: 脚本第一条动作就要写开始行")
+expectTrue(scriptForStart.range(of: "开始")!.lowerBound < scriptForStart.range(of: "true")!.lowerBound,
+           "buildCommandScript: 开始行必须写在真正命令之前")
+
 // —— 只读新增内容：读全量会把上一次的结束行当成这次的结果 ——
 let tailDir = NSTemporaryDirectory() + "ai-launcher-tail-\(getpid())"
 try? FileManager.default.createDirectory(atPath: tailDir, withIntermediateDirectories: true)

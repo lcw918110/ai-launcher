@@ -437,20 +437,30 @@ func copyLogPath(params: CopyParams, root: String = copyLogRoot()) -> String {
 // 轮询新增内容，看到结束行就把成功/失败写回状态栏，用户切走再回来也能知道结果。
 
 struct CopyOutcome {
+    var started: Bool      // 日志里出现了脚本层的「开始」行 = 脚本真的执行了
     var finished: Bool
     var exitCode: Int?
 }
 
 // 同一任务多次运行会追加多条结束行，取最后一条；rsync 明细里不会出现这个措辞
+//
+// started 的意义：`.command` 交给 Terminal 是**单向通道** —— open 与 NSWorkspace 的
+// completionHandler 都只回报「请求已交给 Terminal」（实测 error=nil、bundle=com.apple.Terminal），
+// 即使沙箱/策略把文稿拦了下来也一样。所以「脚本有没有真的跑起来」只能由脚本自己报：
+// buildCommandScript 的第一条动作就是写「[时间] 开始 …」，读到它才算开始。
 func parseCopyLogOutcome(_ text: String) -> CopyOutcome {
+    var started = false
     var lastExit: Int?
     for raw in text.components(separatedBy: "\n") {
         let line = raw.trimmingCharacters(in: .whitespaces)
+        // rsync 自己的明细行形如 "2026/11/11 22:01:07 [14720] …"，开头不是 "["，
+        // 而脚本层的标记行一定以 "[时间] " 开头，两者不会混
+        if line.hasPrefix("[") && line.contains("] 开始") { started = true }
         guard let r = line.range(of: "结束，退出码 ") else { continue }
         let digits = line[r.upperBound...].prefix { $0.isNumber }
         if let v = Int(digits) { lastExit = v }
     }
-    return CopyOutcome(finished: lastExit != nil, exitCode: lastExit)
+    return CopyOutcome(started: started, finished: lastExit != nil, exitCode: lastExit)
 }
 
 // 只读「本次运行新增」的内容。

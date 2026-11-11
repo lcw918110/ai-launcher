@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var outcomeLogPath = ""
     var outcomeOffset: Int64 = 0
     var outcomeBaseStatus = ""           // 轮询期间保留「走的哪条路」这句，只在其后追加已运行时长
+    var outcomeHasStarted = false        // 日志里出现过脚本层的「开始」行 = 拷贝真的在跑
     var outcomeStartedAt = Date()
     var copyPresetPopup: NSPopUpButton!   // 互拷预设（config 的 copy.hosts）
     var copyHosts: [CopyHostConfig] = []

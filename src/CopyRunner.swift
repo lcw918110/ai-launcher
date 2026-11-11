@@ -94,9 +94,20 @@ extension AppDelegate {
 
         // 普通执行（非 exec），前后 echo 提示，保留进度与完成提示
         let fullCmd = "echo '===== 开始拷贝 ====='; " + cmd
-        launchCommandInTerminal(fullCmd, autoCloseOnSuccess: true,
-                                logPath: logPath, startNote: "\(params.source) → \(params.target)")
+        guard launchCommandInTerminal(fullCmd, autoCloseOnSuccess: true, logPath: logPath,
+                                      startNote: "\(params.source) → \(params.target)") else {
+            copyStatusLabel.stringValue = terminalLaunchFailedText()
+            return
+        }
         beginOutcomeWatch(logPath: logPath)
+    }
+
+    // open 的退出码只在「文件没有、没有程序能打开它」这类错误上可信；
+    // 文稿被系统拦下时它照样返回 0，那种情况由脚本自己回报（见 parseCopyLogOutcome）。
+    func terminalLaunchFailedText() -> String {
+        lastCommandScriptPath.isEmpty
+            ? "无法交给 Terminal（open 返回失败）：检查「系统设置 → 隐私与安全性」后重试"
+            : "无法交给 Terminal（open 返回失败）：可在终端里手动执行 \(lastCommandScriptPath)"
     }
 
     // 轮询日志新增内容，把退出码写回状态栏。
@@ -109,6 +120,7 @@ extension AppDelegate {
         let attrs = try? FileManager.default.attributesOfItem(atPath: logPath)
         outcomeOffset = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
         outcomeBaseStatus = copyStatusLabel?.stringValue ?? ""
+        outcomeHasStarted = false
         outcomeStartedAt = Date()
         let t = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in self?.pollCopyOutcome() }
         // .common：滚动窗口时 RunLoop 处于 tracking 模式，默认模式下的 timer 不触发
@@ -128,6 +140,8 @@ extension AppDelegate {
         let r = readNewText(path: outcomeLogPath, fromOffset: outcomeOffset)
         outcomeOffset = r.offset
         let outcome = parseCopyLogOutcome(r.text)
+        // 开始行可能出现在更早的一段里，所以只置位不回退
+        if outcome.started { outcomeHasStarted = true }
         let name = (outcomeLogPath as NSString).lastPathComponent
 
         if outcome.finished, let code = outcome.exitCode {
@@ -141,10 +155,15 @@ extension AppDelegate {
             return
         }
 
-        // 给个时间感，否则长时间只有「进行中…」分不清是慢还是卡死；超过 6 小时不再轮询
+        // 状态只陈述已知事实，不用时间推断：
+        // - 日志里还没有「开始」行 → 只能说「已交给 Terminal」，不能声称在跑
+        //   （open / NSWorkspace 都只回报“请求已交给 Terminal”，文稿被系统拦下时也一样）
+        // - 见到「开始」行 → 拷贝确实在跑，这时才给时长
+        // 超过 6 小时不再轮询
         let secs = Int(Date().timeIntervalSince(outcomeStartedAt))
         if secs > 6 * 3600 { stopOutcomeWatch(); return }
-        copyStatusLabel?.stringValue = outcomeBaseStatus + " · 已运行 \(secs)s"
+        copyStatusLabel?.stringValue = outcomeBaseStatus
+            + (outcomeHasStarted ? " · 运行中 \(secs)s" : " · 已交给 Terminal，等待脚本开始")
     }
 
     // 记住这次任务：续传要求「源/目标不变、再点一次」，app 重启后要能自动回填
@@ -222,8 +241,11 @@ extension AppDelegate {
             }
             debugLog("[互拷] 直连（实测通过）: \(cmd)")
             copyStatusLabel.stringValue = "直连：在源机执行 rsync（源机→目标机免密已实测通过）"
-            launchCommandInTerminal("echo '===== 开始拷贝（直连）====='; " + cmd,
-                                    autoCloseOnSuccess: true, logPath: logPath, startNote: note)
+            guard launchCommandInTerminal("echo '===== 开始拷贝（直连）====='; " + cmd,
+                                          autoCloseOnSuccess: true, logPath: logPath, startNote: note) else {
+                copyStatusLabel.stringValue = terminalLaunchFailedText()
+                return
+            }
             beginOutcomeWatch(logPath: logPath)
 
         case .relayResume:
@@ -238,8 +260,11 @@ extension AppDelegate {
             debugLog("[互拷] 续传式中转（直连不通）: \(cmd)")
             copyStatusLabel.stringValue =
                 "直连不通，已自动改走本机中转（两段 rsync）：源机 → 本机暂存 → 目标机，中断后再点一次即续传"
-            launchCommandInTerminal("echo '===== 开始中转（可续传）====='; echo '暂存目录: \(stage.replacingOccurrences(of: "'", with: "'\\''"))'; " + cmd,
-                                    autoCloseOnSuccess: true, logPath: logPath, startNote: note)
+            guard launchCommandInTerminal("echo '===== 开始中转（可续传）====='; echo '暂存目录: \(stage.replacingOccurrences(of: "'", with: "'\\''"))'; " + cmd,
+                                          autoCloseOnSuccess: true, logPath: logPath, startNote: note) else {
+                copyStatusLabel.stringValue = terminalLaunchFailedText()
+                return
+            }
             beginOutcomeWatch(logPath: logPath)
 
         case .relayTar:
@@ -255,8 +280,11 @@ extension AppDelegate {
                 copyStatusLabel.stringValue = "直连不通，已自动改走本机中转（tar 流）：本机无可用 rsync，不占盘但不可续传"
             }
             // tar 流没有 --log-file，日志里只有开始/结束与退出码，明细仍在 Terminal 里
-            launchCommandInTerminal("echo '===== 开始中转拷贝 ====='; " + cmd,
-                                    autoCloseOnSuccess: true, logPath: logPath, startNote: note)
+            guard launchCommandInTerminal("echo '===== 开始中转拷贝 ====='; " + cmd,
+                                          autoCloseOnSuccess: true, logPath: logPath, startNote: note) else {
+                copyStatusLabel.stringValue = terminalLaunchFailedText()
+                return
+            }
             beginOutcomeWatch(logPath: logPath)
         }
     }
