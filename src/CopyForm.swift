@@ -13,26 +13,8 @@ extension AppDelegate {
         title.font = NSFont.boldSystemFont(ofSize: 15)
         stack.addView(title, in: .leading)
 
-        // 预设主机（config 的 copy.hosts）：选中即填连接串 / 用户名 / 主机
-        copyHosts = loadCopyConfig().hosts
-        if !copyHosts.isEmpty {
-            let presetRow = NSStackView()
-            presetRow.orientation = .horizontal
-            presetRow.spacing = 8
-            let presetLabel = NSTextField(labelWithString: "预设")
-            presetLabel.font = NSFont.systemFont(ofSize: 12)
-            let popup = NSPopUpButton()
-            popup.addItem(withTitle: "选择预设主机…")
-            for h in copyHosts {
-                popup.addItem(withTitle: "\(h.name)（\(h.spec)）")
-            }
-            popup.target = self
-            popup.action = #selector(presetChanged(_:))
-            copyPresetPopup = popup
-            presetRow.addView(presetLabel, in: .leading)
-            presetRow.addView(popup, in: .trailing)
-            stack.addView(presetRow, in: .leading)
-        }
+        // 源头只有一个：~/.ssh/config。改那边一条 Host 就会出现在联想里，
+        // 不必再在 config.json 里手抄一份「显示名 + user@host」的清单（原先的「预设」下拉已删除）
 
         // 源路径
         let srcRow = NSStackView()
@@ -224,6 +206,12 @@ extension AppDelegate {
     }
 
     // —— 实时联想：输入停顿 0.15s 后弹候选（非阻塞 Popover，不再抢键盘）——
+    // 顺带记住「最近聚焦过的路径框」：「解析」要回填路径时只认它，绝不替用户猜另一个框
+    func controlTextDidBeginEditing(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField else { return }
+        if field === copySourceField || field === copyTargetField { lastPathField = field }
+    }
+
     func controlTextDidChange(_ obj: Notification) {
         guard let field = obj.object as? NSTextField else { return }
         // 只在四个目标输入框触发联想
@@ -324,19 +312,9 @@ extension AppDelegate {
         }
     }
 
-    // 预设主机下拉（config 的 copy.hosts）
-    @objc func presetChanged(_ sender: NSPopUpButton) {
-        let idx = sender.indexOfSelectedItem - 1
-        guard idx >= 0, idx < copyHosts.count else { return }
-        let host = copyHosts[idx]
-        copyConnField.stringValue = host.spec
-        applySSHHostToFields(host.spec, forceTrigger: .conn)
-        copyStatusLabel.stringValue = "已选预设 \(host.name)：\(host.spec)"
-    }
-
-    // 解析连接串并回填凭据字段（用户名/密码/IP/端口）
-    // 注意：不再自动填路径前缀——路径前缀由「联想选中」和「浏览远端」精确填到对应框，
-    // 避免「源空填源、源非空填目标」的串框隐患。
+    // 解析连接串：回填凭据字段（用户名/密码/IP/端口），并把 host 前缀补进「最近聚焦过的路径框」
+    // 焦点判定用 lastPathField 而不是当场 firstResponder：要点「解析」就必然离开路径框，
+    // 当场取焦点只会拿到连接串框，永远回填不到路径上。
     @objc func parseConn(_ sender: Any) {
         let raw = copyConnField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let info = parseConnection(raw)
@@ -351,20 +329,40 @@ extension AppDelegate {
         copyHostField.stringValue = info.host
         copyPortField.stringValue = info.port
 
-        copyStatusLabel.stringValue = "已解析：\(info.user.isEmpty ? "" : info.user + "@")\(info.host)\(info.port.isEmpty ? "" : ":" + info.port)"
+        // 密码绝不进路径（rsync 不认 URL 里的密码，还会把明文摊在命令行上）
+        let spec = buildHostSpec(ConnectionInfo(user: info.user, password: "",
+                                                host: info.host, port: info.port))
+        let parsed = "已解析：\(spec)"
         // 日志脱敏：不落原始连接串与明文密码
         debugLog("[互拷] 连接串解析成功: user=\(info.user) host=\(info.host) port=\(info.port) pass=\(maskSecret(info.password))")
+
+        guard let field = lastPathField else {
+            copyStatusLabel.stringValue = parsed + "（点一下源/目标路径框再解析，即可填进路径）"
+            return
+        }
+        let filled = applyHostToPath(field.stringValue, hostSpec: spec)
+        field.stringValue = filled
+        // 光标落回该框末尾：末尾正是接着写路径的位置
+        window?.makeFirstResponder(field)
+        if let editor = field.currentEditor() {
+            editor.selectedRange = NSRange(location: (filled as NSString).length, length: 0)
+        }
+        let name = field === copySourceField ? "源路径" : "目标路径"
+        copyStatusLabel.stringValue = "\(parsed)，已填入\(name)：\(filled)"
+        debugLog("[互拷] 连接串解析并回填\(name): \(filled)")
     }
 
     @objc func pickSource(_ sender: Any) {
         if let p = pickPath(message: "选择源路径（文件或文件夹）") {
             copySourceField.stringValue = p
+            lastPathField = copySourceField
         }
     }
 
     @objc func pickTarget(_ sender: Any) {
         if let p = pickPath(message: "选择目标路径（文件或文件夹）") {
             copyTargetField.stringValue = p
+            lastPathField = copyTargetField
         }
     }
 
@@ -416,6 +414,8 @@ extension AppDelegate {
     }
 
     func browseRemote(into field: NSTextField) {
+        // 浏览的是哪个框，就记住哪个框：「浏览远端」选完路径后紧接着点「解析」，前缀应该补给它
+        lastPathField = field
         guard !isBrowsingRemote else {
             copyStatusLabel.stringValue = "正在浏览远端，请稍候…"
             return

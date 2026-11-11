@@ -19,12 +19,6 @@
     "/usr/local/bin"
   ],
   "copy": {
-    "hosts": [
-      {
-        "name": "示例机",
-        "spec": "user@192.0.2.10"
-      }
-    ],
     "defaultFlags": []
   }
 }

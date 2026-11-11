@@ -3,6 +3,17 @@
 版本号遵循「主版本.次版本.修订号」，1.0 之前每次成批改动升次版本号。安装包版本以 `src/Info.plist` 的
 `CFBundleShortVersionString` 为准，构建脚本原样拷入 `.app`。
 
+## 0.5.0 — 2026-11-11
+
+去掉一处重复配置，修掉「解析」不回填路径的毛病。
+
+- **删除「预设」下拉（连同 `copy.hosts`）**：这个下拉要求手工在 `config.json` 里维护一份「显示名 + user@host」，可同一批机器早已在 `~/.ssh/config` 里；互拷的免密联想本来就按 mtime 实时读那份文件。同一个事实存两份，改一处忘另一处，界面上还多一行。现在主机清单只有 `~/.ssh/config` 一个来源，`CopyConfig` 只剩 `defaultFlags`，`CopyParams.hostSpec`（早已没人读的死字段）一并删掉。旧配置里留着 `copy.hosts` 不报错，只是不再显示。
+- **「解析」现在会把 host 补进路径框**：此前点「解析」只填用户名/密码/IP/端口，路径框纹丝不动——刚在源路径框写好 `/Users/me/data`，解析完还得手打一遍 `jykj@192.168.198.101:`。现在按**最近聚焦过的路径框**回填：有本地路径就变成 `user@host:/原路径`，空框留成 `user@host:` 让光标接着写，已是远端路径则只换 host（重复解析不会叠成 `host:host:/path`），光标落回框末尾。
+- **为什么不取当场焦点**：要点「解析」就必然已离开路径框，`firstResponder` 只会是连接串框，永远够不到路径——所以记 `lastPathField`（`controlTextDidBeginEditing` 与「选择…」时更新）。一次都没点过路径框时不猜，状态栏提示「点一下源/目标路径框再解析，即可填进路径」。
+- **回填做成纯函数**：`applyHostToPath(path:hostSpec:)` 落在 Core，用 `splitRemoteSpec` 而非 `splitRemotePath` 拆原值——后者只认第一个冒号，遇到 `host:2200:/data` 会把端口当路径，拼出 `host:2200:2200:/data`（测试先抓到的正是这条）。
+- **测试 370 → 374 条**：`applyHostToPath` 的空 / 本地 / 相对 / 远端换 host / 幂等五条；`loadCopyConfig` 改为只断言 `defaultFlags`（fixture 里仍保留旧 `hosts` 键，回归「旧配置照样能读」）。
+- **GUI 自测加一条实测**：`--selftest` 里真调一次 `parseConn`，日志应出现 `解析回填 = PASS`。
+
 ## 0.4.9 — 2026-11-11
 
 状态栏不再用时间推断「在跑」，改成只陈述脚本自己写进日志的事实。

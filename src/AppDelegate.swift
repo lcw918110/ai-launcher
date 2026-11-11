@@ -26,8 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var outcomeBaseStatus = ""           // 轮询期间保留「走的哪条路」这句，只在其后追加已运行时长
     var outcomeHasStarted = false        // 日志里出现过脚本层的「开始」行 = 拷贝真的在跑
     var outcomeStartedAt = Date()
-    var copyPresetPopup: NSPopUpButton!   // 互拷预设（config 的 copy.hosts）
-    var copyHosts: [CopyHostConfig] = []
+    var lastPathField: NSTextField?        // 最近聚焦过的路径框（源/目标）；「解析」据此决定往哪个框回填
     var contentStack: NSStackView!        // 滚动视图里的内容栈（自测与刷新用）
     // 免密机器联想（实时筛选 ~/.ssh/config）
     var sshHostsCache: [SSHHost] = []
@@ -160,7 +159,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         debugLog("[自测] 互拷开始按钮状态标签存在 = \(copyStatusLabel != nil)")
         debugLog("[自测] 窗口内容在滚动视图内 = \(window?.contentView is NSScrollView) 可缩放 = \(window?.styleMask.contains(.resizable) ?? false)")
         debugLog("[自测] 配置 PATH 前缀 = \(loadPathPrepend().joined(separator: ":"))")
-        debugLog("[自测] 互拷预设主机 = \(copyHosts.map { $0.spec }.joined(separator: ","))")
+        // 解析回填冒烟：路径框里有本地路径 → 解析「user@host:端口」后应变成「user@host:端口:/原路径」
+        lastPathField = copySourceField
+        copySourceField.stringValue = "/tmp/demo"
+        copyConnField.stringValue = "jykj@192.0.2.9:2200"
+        parseConn(self)
+        let refillOK = copySourceField.stringValue == "jykj@192.0.2.9:2200:/tmp/demo"
+        debugLog("[自测] 解析回填 = \(refillOK ? "PASS" : "FAIL") 源路径=\(copySourceField.stringValue) 主机=\(copyHostField.stringValue) 端口=\(copyPortField.stringValue) 用户名=\(copyUserField.stringValue)")
+        for f in [copySourceField, copyConnField, copyHostField, copyPortField, copyUserField] {
+            f?.stringValue = ""
+        }
+        lastPathField = nil
         debugLog("[自测] 工具菜单（日志/暂存/配置）存在 = \(NSApp.mainMenu?.items.contains { $0.submenu?.title == "工具" } ?? false)")
 
         // 滚动布局是否真的生效：文档高度 vs 可视高度

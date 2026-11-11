@@ -43,7 +43,6 @@ extension AppDelegate {
             recursive: copyRecursiveCheck.state == .on,
             preserveAttrs: copyPreserveCheck.state == .on,
             resume: copyResumeCheck.state == .on,
-            hostSpec: connSpec,
             bwlimitKbps: bwKbps
         )
         return (params, direction, nil)

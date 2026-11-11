@@ -14,16 +14,12 @@ struct ToolConfig {
 }
 
 // —— 互拷（两台机器之间拷贝文件/文件夹）——
-struct CopyHostConfig {
-    let name: String   // 预设显示名
-    let spec: String   // user@host 或 host（不含路径）
-}
-
+// 只剩 defaultFlags。历史上还有 hosts（「预设」下拉）与 defaultDirection / auth：
+// - hosts 已删除：它要求手工维护一份「显示名 + user@host」清单，与 ~/.ssh/config 重复；
+//   互拷的免密联想本来就实时读 ~/.ssh/config，改那边一处即可，不必维护两份。
+// - defaultDirection / auth：方向由源/目标路径自动推导，密码走 Terminal 真 TTY 交互，两个键早已无意义。
 struct CopyConfig {
-    let hosts: [CopyHostConfig]
     let defaultFlags: [String]     // rsync 额外参数数组
-    // 注：defaultDirection / auth 字段已废弃（方向由路径自动推导，密码走 TTY 交互），
-    // 读取时忽略旧配置里的这两个键，向后兼容。
 }
 
 struct CopyParams {
@@ -32,7 +28,6 @@ struct CopyParams {
     var recursive: Bool
     var preserveAttrs: Bool
     var resume: Bool        // 断点续传
-    var hostSpec: String    // 所选预设的 spec（user@host 或 host）
     var bwlimitKbps: Int = 0 // rsync --bwlimit，单位 KiB/s；0 表示不限速
 }
 
@@ -237,6 +232,19 @@ func splitRemotePath(_ p: String) -> (host: String, path: String)? {
     let host = String(p[..<idx])
     let path = String(p[p.index(after: idx)...])
     return (host, path)
+}
+
+// 把解析出的 user@host[:port] 补进路径框的值（「解析」按钮回填路径用）
+// - 空：留成 "user@host:"，末尾的冒号就是接着写路径的位置
+// - 已是远端路径：只换 host 前缀、保留原路径，因此重复解析同一串结果不变（幂等）
+// - 本地/相对路径：加前缀，等于「同一个路径在远端」
+func applyHostToPath(_ path: String, hostSpec: String) -> String {
+    let cur = path.trimmingCharacters(in: .whitespacesAndNewlines)
+    if cur.isEmpty { return hostSpec + ":" }
+    // 用 splitRemoteSpec 而不是 splitRemotePath：路径框里可能已有 "user@host:端口:/路径"，
+    // 只按第一个冒号拆会把端口当路径（"2200:/data"），拼出来就是 "host:2200:2200:/data"
+    if isRemotePath(cur), let sp = splitRemoteSpec(cur) { return hostSpec + ":" + sp.path }
+    return hostSpec + ":" + cur
 }
 
 // 拆分远端规格 user@host[:port]:path -> (user@host, port, path)
@@ -840,7 +848,6 @@ func defaultConfigJSON() -> [String: Any] {
         ],
         "pathPrepend": defaultPathPrepend,
         "copy": [
-            "hosts": [],
             "defaultFlags": [],
         ],
     ]
@@ -878,21 +885,15 @@ func loadConfig(path: String = configPath) -> (dirs: [String], tools: [ToolConfi
     return (dirs, tools)
 }
 
-// 读取 copy 段（可选，缺省返回空配置，向后兼容不报错；废弃键 defaultDirection/auth 直接忽略）
+// 读取 copy 段（可选，缺省返回空配置，向后兼容不报错；废弃键 hosts / defaultDirection / auth 直接忽略）
 func loadCopyConfig(path: String = configPath) -> CopyConfig {
     guard let data = FileManager.default.contents(atPath: path),
           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let copy = json["copy"] as? [String: Any] else {
-        return CopyConfig(hosts: [], defaultFlags: [])
-    }
-    let hosts = (copy["hosts"] as? [Any] ?? []).compactMap { item -> CopyHostConfig? in
-        guard let dict = item as? [String: Any],
-              let name = dict["name"] as? String,
-              let spec = dict["spec"] as? String else { return nil }
-        return CopyHostConfig(name: name, spec: spec)
+        return CopyConfig(defaultFlags: [])
     }
     let flags = (copy["defaultFlags"] as? [Any] ?? []).compactMap { $0 as? String }
-    return CopyConfig(hosts: hosts, defaultFlags: flags)
+    return CopyConfig(defaultFlags: flags)
 }
 
 // —— 上次互拷任务 ——
