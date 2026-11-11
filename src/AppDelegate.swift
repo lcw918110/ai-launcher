@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var outcomeHasStarted = false        // 日志里出现过脚本层的「开始」行 = 拷贝真的在跑
     var outcomeStartedAt = Date()
     var lastPathField: NSTextField?        // 最近聚焦过的路径框（源/目标）；「解析」据此决定往哪个框回填
+    var pathFocusObserver: NSObjectProtocol?  // 直接听 textDidBeginEditing 通知，不只看 delegate 回调
     var contentStack: NSStackView!        // 滚动视图里的内容栈（自测与刷新用）
     // 免密机器联想（实时筛选 ~/.ssh/config）
     var sshHostsCache: [SSHHost] = []
@@ -36,11 +37,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var suggestionTimer: Timer?                 // 输入去抖
     var isBrowsingRemote = false                // 远端浏览进行中（防重入）
 
+    deinit {
+        if let observer = pathFocusObserver { NotificationCenter.default.removeObserver(observer) }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("[AI启动器] 启动")
         ensureConfigExists()
         setupMainMenu()
         buildWindow()
+        // 焦点记录双保险：delegate 回调之外，直接听系统的 textDidBeginEditing 通知。
+        // 窗口不是 key（自动化/后台）时 delegate 可能一次都不发，通知这条链更直接。
+        pathFocusObserver = NotificationCenter.default.addObserver(
+            forName: NSControl.textDidBeginEditingNotification, object: nil, queue: nil
+        ) { [weak self] note in
+            guard let self = self, let f = note.object as? NSTextField else { return }
+            if f === self.copySourceField || f === self.copyTargetField { self.lastPathField = f }
+        }
         // 自测要的是干净的表单，回填会干扰断言
         if !gSelfTest { restoreLastCopyIfEmpty() }
         if gSelfTest {
@@ -159,17 +172,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         debugLog("[自测] 互拷开始按钮状态标签存在 = \(copyStatusLabel != nil)")
         debugLog("[自测] 窗口内容在滚动视图内 = \(window?.contentView is NSScrollView) 可缩放 = \(window?.styleMask.contains(.resizable) ?? false)")
         debugLog("[自测] 配置 PATH 前缀 = \(loadPathPrepend().joined(separator: ":"))")
-        // 解析回填冒烟：路径框里有本地路径 → 解析「user@host:端口」后应变成「user@host:端口:/原路径」
-        lastPathField = copySourceField
+        // —— 「解析」回填：模拟真人操作的 GUI 冒烟（TDD）——
+        // 规矩：不手动设 lastPathField、不直接调 parseConn，全部走 firstResponder + 按钮 performClick。
+        // 上一版的自测手工塞了 lastPathField，等于绕开了「用户到底有没有点过路径框」这一环，假绿。
+        var parseBtn: NSButton?
+        if let stack = contentStack {
+            for case let row as NSStackView in stack.views {
+                for case let b as NSButton in row.views where b.title == "解析" { parseBtn = b }
+            }
+        }
+        func resetParseFields() {
+            for f in [copySourceField, copyTargetField, copyConnField,
+                      copyUserField, copyPassField, copyHostField, copyPortField] { f?.stringValue = "" }
+            _ = window.makeFirstResponder(copyConnField)
+            lastPathField = nil                 // 刚启动、还没点过任何路径框
+            closeSuggestions()
+        }
+        debugLog("[TDD] 找到「解析」按钮 = \(parseBtn != nil)")
+
+        // A：真人点过源路径框，再去连接串框粘贴，然后点「解析」
+        // 注：--selftest 里窗口不是 key，makeFirstResponder 不会发出 textDidBeginEditing；
+        // 这条同时覆盖「焦点记录漏发」时按内容兜底是否能填对框。
+        resetParseFields()
+        _ = window.makeFirstResponder(copySourceField)
+        copySourceField.stringValue = "/tmp/demo"
+        _ = window.makeFirstResponder(copyConnField)
+        copyConnField.stringValue = "jykj@192.0.2.9:2200"
+        parseBtn?.performClick(nil)
+        let tddA = copySourceField.stringValue == "jykj@192.0.2.9:2200:/tmp/demo"
+        debugLog("[TDD] A 点过源路径框 → \(tddA ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 状态=\(copyStatusLabel.stringValue)")
+
+        // B：从没点过路径框，但源路径已被程序回填（last-copy.json）——真人最常遇到的情形
+        resetParseFields()
         copySourceField.stringValue = "/tmp/demo"
         copyConnField.stringValue = "jykj@192.0.2.9:2200"
-        parseConn(self)
-        let refillOK = copySourceField.stringValue == "jykj@192.0.2.9:2200:/tmp/demo"
-        debugLog("[自测] 解析回填 = \(refillOK ? "PASS" : "FAIL") 源路径=\(copySourceField.stringValue) 主机=\(copyHostField.stringValue) 端口=\(copyPortField.stringValue) 用户名=\(copyUserField.stringValue)")
-        for f in [copySourceField, copyConnField, copyHostField, copyPortField, copyUserField] {
-            f?.stringValue = ""
-        }
-        lastPathField = nil
+        parseBtn?.performClick(nil)
+        let tddB = copySourceField.stringValue == "jykj@192.0.2.9:2200:/tmp/demo"
+        debugLog("[TDD] B 路径是回填的、没点过框 → \(tddB ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 状态=\(copyStatusLabel.stringValue)")
+
+        // C：两个路径框都空、从没点过 —— 解析后至少该给个可续写的起点
+        resetParseFields()
+        copyConnField.stringValue = "jykj@192.0.2.9:2200"
+        parseBtn?.performClick(nil)
+        let tddC = copySourceField.stringValue == "jykj@192.0.2.9:2200:"
+        debugLog("[TDD] C 两框都空 → \(tddC ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 状态=\(copyStatusLabel.stringValue)")
+
+        // D：点过目标框，源框另有内容 —— 只填目标，不许串到源
+        resetParseFields()
+        copySourceField.stringValue = "/tmp/keep"
+        _ = window.makeFirstResponder(copyTargetField)
+        copyTargetField.stringValue = "/data/in"
+        _ = window.makeFirstResponder(copyConnField)
+        copyConnField.stringValue = "jykj@192.0.2.9"
+        parseBtn?.performClick(nil)
+        let tddD = copyTargetField.stringValue == "jykj@192.0.2.9:/data/in" && copySourceField.stringValue == "/tmp/keep"
+        debugLog("[TDD] D 点过目标框 → \(tddD ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 目标=\(copyTargetField.stringValue)")
+
+        // E：焦点记录的监听链真的接上了（post 系统通知，不是手动改状态变量）
+        resetParseFields()
+        NotificationCenter.default.post(name: NSControl.textDidBeginEditingNotification, object: copySourceField)
+        let tddE = lastPathField === copySourceField
+        debugLog("[TDD] E 通知能记录焦点 → \(tddE ? "PASS" : "FAIL")")
+
+        // F：有焦点记录时优先听它，哪怕另一个框有内容（焦点优先于内容规则）
+        resetParseFields()
+        copySourceField.stringValue = "/tmp/keep"
+        NotificationCenter.default.post(name: NSControl.textDidBeginEditingNotification, object: copyTargetField)
+        copyConnField.stringValue = "jykj@192.0.2.9"
+        parseBtn?.performClick(nil)
+        let tddF = copyTargetField.stringValue == "jykj@192.0.2.9:" && copySourceField.stringValue == "/tmp/keep"
+        debugLog("[TDD] F 焦点优先于内容 → \(tddF ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 目标=\(copyTargetField.stringValue)")
+
+        let passed = [tddA, tddB, tddC, tddD, tddE, tddF].filter { $0 }.count
+        debugLog("[TDD] 解析回填 \(passed)/6 PASS")
+        resetParseFields()
         debugLog("[自测] 工具菜单（日志/暂存/配置）存在 = \(NSApp.mainMenu?.items.contains { $0.submenu?.title == "工具" } ?? false)")
 
         // 滚动布局是否真的生效：文档高度 vs 可视高度

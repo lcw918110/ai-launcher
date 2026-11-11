@@ -189,6 +189,23 @@ expectEqual(applyHostToPath("old@h:/data", hostSpec: "jykj@192.0.2.9:2200"), "jy
 expectEqual(applyHostToPath("jykj@192.0.2.9:2200:/data", hostSpec: "jykj@192.0.2.9:2200"),
             "jykj@192.0.2.9:2200:/data", "applyHostToPath: 重复解析结果不变（幂等）")
 
+// 「解析」该把 host 补进哪个路径框：焦点优先，没有焦点记录时只看框里有没有内容
+// 回归人工测试：用户直接粘连接串点「解析」、或路径是程序回填的，都不该什么都不填
+expectEqual(resolveParseTarget(lastFocused: .source, source: "", target: "/data"), .source,
+            "resolveParseTarget: 点过源框，即使它空着也填源")
+expectEqual(resolveParseTarget(lastFocused: .target, source: "/tmp/a", target: ""), .target,
+            "resolveParseTarget: 点过目标框，即使源已有内容也不串框")
+expectEqual(resolveParseTarget(lastFocused: .none, source: "", target: ""), .source,
+            "resolveParseTarget: 都没内容、没点过框 → 填源给起点")
+expectEqual(resolveParseTarget(lastFocused: .none, source: "/tmp/a", target: ""), .source,
+            "resolveParseTarget: 只有源有内容 → 填源（路径是回填的常见情形）")
+expectEqual(resolveParseTarget(lastFocused: .none, source: "", target: "/data"), .target,
+            "resolveParseTarget: 只有目标有内容 → 填目标")
+expectEqual(resolveParseTarget(lastFocused: .none, source: "/tmp/a", target: "/data"), .target,
+            "resolveParseTarget: 两框都有内容、无焦点 → 填目标（状态栏写明可改）")
+expectEqual(resolveParseTarget(lastFocused: .none, source: "   ", target: "/data"), .target,
+            "resolveParseTarget: 纯空白按空处理")
+
 let srs = splitRemoteSpec("user@192.168.1.5:2222:/data")
 expectEqual(srs?.host, "user@192.168.1.5", "splitRemoteSpec: host（含端口时拆出）")
 expectEqual(srs?.port, "2222", "splitRemoteSpec: port")

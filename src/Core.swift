@@ -234,6 +234,23 @@ func splitRemotePath(_ p: String) -> (host: String, path: String)? {
     return (host, path)
 }
 
+// 「解析」把 host 补进哪个路径框
+// 有「最近聚焦过」的记录就尊重它；没有时只看框里有没有内容这个事实。
+// 不能把回填押在 textDidBeginEditing 一定发出上：窗口不是 key（--selftest 环境）时一次都不发；
+// 真人也可能压根没点过路径框（路径是 last-copy.json 回填的）。这两种情况下都必须填点东西。
+enum ParseTargetField: String {
+    case none, source, target
+}
+
+func resolveParseTarget(lastFocused: ParseTargetField,
+                        source: String, target: String) -> ParseTargetField {
+    if lastFocused != .none { return lastFocused }
+    let t = target.trimmingCharacters(in: .whitespacesAndNewlines)
+    // 目标空 → 填源（源是必填起点，也是「只有一个框有内容」时的自然归属）
+    // 目标有内容 → 填目标（push 常见；两框都有内容且无焦点时的一条确定规则，状态栏会写明可改）
+    return t.isEmpty ? .source : .target
+}
+
 // 把解析出的 user@host[:port] 补进路径框的值（「解析」按钮回填路径用）
 // - 空：留成 "user@host:"，末尾的冒号就是接着写路径的位置
 // - 已是远端路径：只换 host 前缀、保留原路径，因此重复解析同一串结果不变（幂等）

@@ -206,17 +206,20 @@ extension AppDelegate {
     }
 
     // —— 实时联想：输入停顿 0.15s 后弹候选（非阻塞 Popover，不再抢键盘）——
-    // 顺带记住「最近聚焦过的路径框」：「解析」要回填路径时只认它，绝不替用户猜另一个框
-    func controlTextDidBeginEditing(_ obj: Notification) {
+    // 顺带记住「最近聚焦过的路径框」：解析回填优先填它（没记录时由 resolveParseTarget 按内容兜底）
+    // 显式 @objc：这是 NSControlTextEditingDelegate 的可选方法，写在 extension 里靠推断不可靠
+    @objc func controlTextDidBeginEditing(_ obj: Notification) {
         guard let field = obj.object as? NSTextField else { return }
         if field === copySourceField || field === copyTargetField { lastPathField = field }
     }
 
-    func controlTextDidChange(_ obj: Notification) {
+    @objc func controlTextDidChange(_ obj: Notification) {
         guard let field = obj.object as? NSTextField else { return }
         // 只在四个目标输入框触发联想
         guard field === copySourceField || field === copyTargetField ||
               field === copyConnField || field === copyHostField else { return }
+        // 输入时再记一次，防止 beginEditing 通知因窗口未激活而漏发
+        if field === copySourceField || field === copyTargetField { lastPathField = field }
         autocompleteSourceField = field
         // 去抖：连续输入期间不弹，停手后再弹
         suggestionTimer?.invalidate()
@@ -312,9 +315,10 @@ extension AppDelegate {
         }
     }
 
-    // 解析连接串：回填凭据字段（用户名/密码/IP/端口），并把 host 前缀补进「最近聚焦过的路径框」
-    // 焦点判定用 lastPathField 而不是当场 firstResponder：要点「解析」就必然离开路径框，
-    // 当场取焦点只会拿到连接串框，永远回填不到路径上。
+    // 解析连接串：回填凭据字段，并把 host 前缀补进一个路径框
+    // 选框走 Core 纯函数 resolveParseTarget：优先「最近聚焦过的框」，没记录时按框里有没有内容决定。
+    // 不取当场 firstResponder —— 点按钮时焦点必然在连接串框；也不能要求用户一定点过路径框，
+    // 否则路径是 last-copy.json 回填时按「解析」什么都不填（人工测试复现过）。
     @objc func parseConn(_ sender: Any) {
         let raw = copyConnField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let info = parseConnection(raw)
@@ -336,10 +340,16 @@ extension AppDelegate {
         // 日志脱敏：不落原始连接串与明文密码
         debugLog("[互拷] 连接串解析成功: user=\(info.user) host=\(info.host) port=\(info.port) pass=\(maskSecret(info.password))")
 
-        guard let field = lastPathField else {
-            copyStatusLabel.stringValue = parsed + "（点一下源/目标路径框再解析，即可填进路径）"
-            return
+        let focused: ParseTargetField
+        if let f = lastPathField {
+            focused = f === copySourceField ? .source : .target
+        } else {
+            focused = .none
         }
+        let decision = resolveParseTarget(lastFocused: focused,
+                                          source: copySourceField.stringValue,
+                                          target: copyTargetField.stringValue)
+        let field: NSTextField = decision == .target ? copyTargetField : copySourceField
         let filled = applyHostToPath(field.stringValue, hostSpec: spec)
         field.stringValue = filled
         // 光标落回该框末尾：末尾正是接着写路径的位置
@@ -347,9 +357,11 @@ extension AppDelegate {
         if let editor = field.currentEditor() {
             editor.selectedRange = NSRange(location: (filled as NSString).length, length: 0)
         }
-        let name = field === copySourceField ? "源路径" : "目标路径"
-        copyStatusLabel.stringValue = "\(parsed)，已填入\(name)：\(filled)"
-        debugLog("[互拷] 连接串解析并回填\(name): \(filled)")
+        let name = decision == .target ? "目标路径" : "源路径"
+        // 没点过框时是程序按规则选的，得说清楚填了哪个、怎么改（点另一个框再解析即可，替换是幂等的）
+        let hint = focused == .none ? "（要填另一个框，点它一下再解析）" : ""
+        copyStatusLabel.stringValue = "\(parsed)，已填入\(name)：\(filled)\(hint)"
+        debugLog("[互拷] 连接串解析并回填\(name): \(filled) 决策=\(decision.rawValue) 焦点记录=\(focused.rawValue)")
     }
 
     @objc func pickSource(_ sender: Any) {

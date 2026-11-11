@@ -3,6 +3,17 @@
 版本号遵循「主版本.次版本.修订号」，1.0 之前每次成批改动升次版本号。安装包版本以 `src/Info.plist` 的
 `CFBundleShortVersionString` 为准，构建脚本原样拷入 `.app`。
 
+## 0.5.1 — 2026-11-11
+
+人工测试打脸：0.5.0 点「解析」后路径框还是没填入。按「先测试后开发」重做这一处。
+
+- **先认错：上一版自测是假绿**。0.5.0 的 GUI 冒烟手工塞了 `lastPathField = copySourceField` 再直接调 `parseConn(self)`，等于绕开「用户到底有没有点过路径框」这一环；日志写着 PASS，真机上根本没走那条路。以后写 GUI 冒烟只走 `firstResponder` 切换 + 按钮 `performClick`，不设状态变量、不直接调被测方法。
+- **红灯**：先写 4 条模拟真人操作的 GUI 用例（点过源路径框 / 路径是程序回填的没点过框 / 两框都空 / 点过目标框），跑出 `0/4 PASS`；再往 Core 测试里写 7 条 `resolveParseTarget` 断言，此时函数还不存在，编译直接失败。
+- **诊断**：`--selftest` 里 `isKeyWindow=false`，`makeFirstResponder` 虽成功但 `textDidBeginEditing` 通知一次都没发（delegate 方法本身确实挂上了，`responds=true`）。真机上同理：路径由 `last-copy.json` 回填时用户压根没点过框。所以「必须点过路径框」这个前提本身就是 bug。当场取 `firstResponder` 也不行——点按钮时焦点必然在连接串框。
+- **修法**：把「填哪个框」抽成 Core 纯函数 `resolveParseTarget(lastFocused:source:target:)`——焦点记录优先；没有记录时只看两个框里有没有内容：目标空填源、目标有内容填目标、两框都空给源一个 `user@host:` 起点。总有东西被填，状态栏写明填了哪个框并提示「要填另一个框，点它一下再解析」。焦点记录加三重保险：`controlTextDidBeginEditing` / `controlTextDidChange` 显式 `@objc`，再直接监听 `NSControl.textDidBeginEditingNotification`。回填值仍走 `applyHostToPath`（本地路径加前缀、远端只换 host、幂等）。
+- **绿灯**：Core 单测 374 → **381 条**（新增 `resolveParseTarget` 7 条）；GUI 冒烟扩到 6 条（含「通知能记录焦点」「焦点优先于内容」），日志 `解析回填 6/6 PASS`。先跑出 0/4，再跑到 6/6。
+- **文档**：docs/03 补两段纯函数的分工、docs/04 改「解析」说明、docs/05 覆盖 381 条并加人工回归验收行、docs/06 新增 G-23 记这次假绿教训。
+
 ## 0.5.0 — 2026-11-11
 
 去掉一处重复配置，修掉「解析」不回填路径的毛病。
