@@ -604,6 +604,38 @@ func readNewText(path: String, fromOffset: Int64, maxBytes: Int = 65_536) -> (te
     return (String(decoding: data, as: UTF8.self), size)
 }
 
+// —— 启动通道：程序永远只能看到「请求已提交」，看不到「真的跑起来了」——
+// open 的退出码对这件事没有信息量：文稿被沙箱/门禁拦下时它照样返回 0，
+// 系统只会弹一个「不允许 Sandbox 在终端中打开文稿」，不给程序任何回调（0.4.9 实测）。
+// 所以「有没有跑起来」的唯一可信证据是脚本自己写下的标记文件：
+// buildCommandScript 的第一条动作就是创建它，命令再挂也一定留痕。
+let launchStartGraceSeconds = 8      // 冷启动 Terminal 通常 1 秒内跑起来；8 秒还没痕迹就按「没跑起来」处理
+
+enum LaunchStart: Equatable {
+    case started         // 标记文件出现 = 真的在跑
+    case waiting         // 还没到时限，不下结论
+    case notStarted      // 到时限仍无痕迹 = 被拦下（沙箱 / 门禁 / 没有可打开它的程序）
+}
+
+func startMarkerPath(for scriptPath: String) -> String {
+    scriptPath + ".started"
+}
+
+// 判定只吃「事实 + 等了多久」，不猜原因：原因写在兜底文案里让用户能看懂
+func launchStartVerdict(hasMarker: Bool, waitedSeconds: Int) -> LaunchStart {
+    if hasMarker { return .started }
+    return waitedSeconds >= launchStartGraceSeconds ? .notStarted : .waiting
+}
+
+// 没跑起来时给用户看的话：既解释那个看不懂的系统弹窗，也给出此刻就能走通的路
+func launchNotStartedNotice(scriptPath: String) -> String {
+    let name = (scriptPath as NSString).lastPathComponent
+    return "⚠️ 脚本没跑起来：macOS 没有把「\(name)」交给终端"
+        + "（如果弹出了「不允许 Sandbox 在终端中打开文稿」，原因就是这个：发起请求的进程处在受限沙箱里，"
+        + "系统直接拒掉这次文稿交接，而且不返回任何错误码）。"
+        + "脚本已留在 \(scriptPath)，把它粘贴到终端里执行即可。"
+}
+
 // 体积文案（暂存目录占用、给用户看，不参与计算）
 func humanSize(_ bytes: Int64) -> String {
     if bytes < 1024 { return "\(bytes) B" }
@@ -899,10 +931,15 @@ func buildToolLaunchLine(dir: String, cmd: String) -> String {
 // autoCloseOnSuccess：成功时按 tty 精确关闭本 tab 所在窗口（匹配不到则不关，避免误关其它窗口）
 // logPath：非空时把「开始/结束 + 退出码」追加进日志；rsync 自身的明细由 --log-file 写同一个文件
 // startNote：日志里记的这次任务摘要（源 → 目标），便于事后回看是哪一次运行
+// markerPath：非空时首条动作就创建它 —— 这是「脚本真的跑起来了」的唯一可信证据
+// （open 返回 0 只代表请求已提交，见 launchStartVerdict 上方注释）
 func buildCommandScript(cmdLine: String, pathPrepend: [String], autoCloseOnSuccess: Bool,
-                        logPath: String = "", startNote: String = "") -> String {
+                        logPath: String = "", startNote: String = "",
+                        markerPath: String = "") -> String {
     let pathLine = buildPathExport(pathPrepend)
     var lines: [String] = ["#!/bin/zsh"]
+    // 第一件事就留痕：后面 cd/命令/exec 全部失败，也还能证明「终端确实执行了这份脚本」
+    if !markerPath.isEmpty { lines.append(": > " + shellQuote(markerPath)) }
     if !pathLine.isEmpty { lines.append(pathLine) }
     // 记录本 tab 的 tty，供成功关窗时精确匹配
     lines.append("_tty=$(tty 2>/dev/null)")

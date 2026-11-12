@@ -147,6 +147,12 @@ extension AppDelegate {
         let outcome = parseCopyLogOutcome(r.text)
         // 开始行可能出现在更早的一段里，所以只置位不回退
         if outcome.started { outcomeHasStarted = true }
+        // 标记文件与日志里的「开始」行是同一件事的两个证据：脚本第一条动作就是写标记，
+        // 所以 marker 更快也更硬（日志目录不可写时日志会缺，但标记一定在）
+        if !outcomeHasStarted,
+           FileManager.default.fileExists(atPath: startMarkerPath(for: lastCommandScriptPath)) {
+            outcomeHasStarted = true
+        }
         let name = (outcomeLogPath as NSString).lastPathComponent
 
         if outcome.finished, let code = outcome.exitCode {
@@ -161,14 +167,25 @@ extension AppDelegate {
         }
 
         // 状态只陈述已知事实，不用时间推断：
-        // - 日志里还没有「开始」行 → 只能说「已交给 Terminal」，不能声称在跑
+        // - 日志里还没有「开始」行、也没有启动标记 → 只能等，不能声称在跑
         //   （open / NSWorkspace 都只回报“请求已交给 Terminal”，文稿被系统拦下时也一样）
-        // - 见到「开始」行 → 拷贝确实在跑，这时才给时长
+        // - 见到证据 → 拷贝确实在跑，这时才给时长
+        // - 等到时限还没证据 → 判定没跑起来，走兜底（剪贴板 + 弹窗），不能再无限挂着「等待脚本开始」
         // 超过 6 小时不再轮询
         let secs = Int(Date().timeIntervalSince(outcomeStartedAt))
         if secs > 6 * 3600 { stopOutcomeWatch(); return }
-        copyStatusLabel?.stringValue = outcomeBaseStatus
-            + (outcomeHasStarted ? " · 运行中 \(secs)s" : " · 已交给 Terminal，等待脚本开始")
+        switch launchStartVerdict(hasMarker: outcomeHasStarted, waitedSeconds: secs) {
+        case .started:
+            copyStatusLabel?.stringValue = outcomeBaseStatus + " · 运行中 \(secs)s"
+        case .waiting:
+            copyStatusLabel?.stringValue = outcomeBaseStatus + " · 已交给 Terminal，等待脚本开始"
+        case .notStarted:
+            stopOutcomeWatch()
+            let notice = fallbackForNotStartedLaunch(scriptPath: lastCommandScriptPath)
+            copyStatusLabel?.stringValue = notice
+            debugLog("[互拷] \(launchStartGraceSeconds) 秒仍无启动证据，判定没跑起来: \(lastCommandScriptPath)")
+            showLaunchBlockedAlert(notice: notice, scriptPath: lastCommandScriptPath)
+        }
     }
 
     // 记住这次任务：续传要求「源/目标不变、再点一次」，app 重启后要能自动回填

@@ -73,7 +73,7 @@ xattr -dr com.apple.quarantine "/Applications/AI终端启动器.app"
 | `scripts/package.sh` / `scripts/sign-app.sh` | 打 DMG 与 zip（universal）/ 给 `.app` 签名（Developer ID 或 ad-hoc） |
 | `scripts/install-remote.sh` | 给他人用的一键安装（下载 → 装 → 清 quarantine） |
 | `.github/workflows/ci.yml` / `release.yml` | CI：编译 + 跑测试 / 推 tag 自动打包发布 |
-| `LICENSE` / `CHANGELOG.md` | MIT 许可 / 版本改动记录（当前 0.5.4） |
+| `LICENSE` / `CHANGELOG.md` | MIT 许可 / 版本改动记录（当前 0.5.5） |
 
 ## 测试
 

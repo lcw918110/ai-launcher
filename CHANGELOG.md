@@ -3,6 +3,17 @@
 版本号遵循「主版本.次版本.修订号」，1.0 之前每次成批改动升次版本号。安装包版本以 `src/Info.plist` 的
 `CFBundleShortVersionString` 为准，构建脚本原样拷入 `.app`。
 
+## 0.5.5 — 2026-11-12
+
+启动不再「看起来成功、实际没跑」：查清「不允许 Sandbox 在终端中打开文稿」的根因，改成按事实判定 + 兜底。仍按 TDD 先红灯后绿灯。
+
+- **根因（人工反馈「上次不是出现过一次么」）**：实测复现 —— 从受限沙箱里的 shell 写 `.command` 再 `open`，**`open` 退出码是 0、脚本完全没被执行**，系统只弹一个 `"xxx.command" 无法打开，因为不允许"Sandbox"在"终端"中打开文稿`；弹窗里的 `Sandbox` 指的就是发起 `open` 的那个进程（沙箱里没有 app 身份）。另外试了 `open -a Terminal`、`open -b com.apple.Terminal`、`xattr -c` 去扩展属性，全部一样被拦 —— 被拦的是「文稿交接」这件事本身，既不是文件属性也不是 Gatekeeper。0.4.9 只把状态栏措辞改成「按 started 陈述事实」，没解决「为什么拦、拦了怎么办」，所以又出现一次。
+- **修法（不再猜，改成验结果）**：脚本第一条动作写 `<脚本>.started` 标记文件（命令再挂也留痕）；`buildCommandScript` 新增 `markerPath`；新增 Core 纯函数 `startMarkerPath` / `launchStartVerdict`（有标记 = 在跑；到 `launchStartGraceSeconds`=8 秒仍无标记 = 没跑起来）/ `launchNotStartedNotice`。没跑起来时 `fallbackForNotStartedLaunch` 把脚本路径放进剪贴板 + 弹窗说清原因并给「在 Finder 中显示」，不再是「已交给 Terminal，等待脚本开始」无限挂着。互拷结果轮询同步改用标记判定（日志里的「开始」行仍是第二证据）。
+- **工具链**：`scripts/build.sh` 在沙箱 shell 里**不再自动重启** —— 那样拉起的实例会被系统当成「Sandbox」，用户之后在这个窗口点「启动」必弹那个框，等于把问题复现给用户看。
+- **防复发**：`check-ui-wiring.sh` 加第 5 项「启动实证」（Core 必须有标记与判定函数、`launchCommandInTerminal` 必须传并记下标记路径、**任何**调用 `launchCommandInTerminal` 的文件必须出现 `launchStartVerdict`/`watchLaunchStart`，即不允许退回「open 返回 0 = 成功」），自带假代码自检。GUI 自测改为按标记文件判事实：真跑了记 PASS；没跑则断言兜底文案与剪贴板内容，绝不当成通过。
+- **验证**：红灯 —— 新函数/参数不存在（编译失败 + 4 处 `cannot find`）。绿灯 —— Core **441 条**全绿；GUI 自测 `启动脚本收尾 PASS`、`启动实证 → 兜底 PASS`（本机实例由沙箱拉起，正好走被拦分支）；`check-ui-wiring.sh` 五项全过（含「启动实证」）。另手工验证：把生成的脚本第 2 行拿去执行，标记文件确实落盘。
+- **文档**：docs/03（§4 增加「启动是单向通道，所以必须验结果」）、docs/04（启动没反应怎么办）、docs/05（断言数与新增组）、docs/06（G-29，并更新 G-14/G-21 尾注）、README、CHANGELOG、Info.plist（0.5.5 / build 19）同步。
+
 ## 0.5.4 — 2026-11-12
 
 解析按焦点回填、浏览远端不再被脏输入带偏、高级选项默认折叠；并把「明显 bug 自己验出来」做成机制。仍按 TDD 先红灯后绿灯。

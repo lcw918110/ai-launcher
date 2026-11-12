@@ -116,6 +116,38 @@ def advanced_fold_errors(files):
     return errs
 
 
+def launch_evidence_errors(files):
+    """启动必须留痕（0.5.5）：`.command` 交给 Terminal 是单向通道 —— open 的退出码在
+    「文稿被沙箱/门禁拦下」时照样是 0，程序收不到任何错误，用户只看到一个看不懂的系统弹窗。
+    所以「跑起来了没有」只能由脚本自己写的标记文件证明；谁把它退化成「open 成功 = 启动成功」，
+    这里就红。"""
+    core = "\n".join(files.get("Core.swift", []))
+    shell = "\n".join(files.get("AppShell.swift", []))
+    errs = []
+    for fn in ("launchStartVerdict", "startMarkerPath", "launchNotStartedNotice"):
+        if f"func {fn}" not in core:
+            errs.append(f"Core 缺少 {fn}（启动实证失效）")
+    if "launchStartGraceSeconds" not in core:
+        errs.append("Core 缺少启动判定时限 launchStartGraceSeconds")
+    m = re.search(r'func buildCommandScript[\s\S]*?\n\}', core)
+    body = m.group(0) if m else ""
+    if "markerPath" not in body or ": > " not in body:
+        errs.append("buildCommandScript 不再写启动标记文件")
+    if "markerPath: markerPath" not in shell:
+        errs.append("launchCommandInTerminal 没有把标记路径传给 buildCommandScript")
+    if "lastLaunchMarkerPath = markerPath" not in shell:
+        errs.append("launchCommandInTerminal 没有记下标记路径（自测/兜底就无从核对）")
+    # 任何真正发起启动的文件，都必须同时判断「有没有跑起来」
+    for fname, lines in files.items():
+        if fname == "AppShell.swift":
+            continue
+        text = "\n".join(lines)
+        if "launchCommandInTerminal(" in text and \
+                "launchStartVerdict(" not in text and "watchLaunchStart(" not in text:
+            errs.append(f"{fname} 只用 open 的返回值判断启动成功（没有检查启动标记）")
+    return errs
+
+
 # 自检：喂一份「旧 exec 写法」的假代码，检查器必须报错。
 # 否则检查器本身就成了新的假绿（0.5.0 的教训）。
 fake = {
@@ -182,6 +214,22 @@ if not advanced_fold_errors(fake_no_fold):
     print("检查器自检失败：高级选项没有默认收起未被识别")
     sys.exit(1)
 
+fake_open_only = {
+    "Core.swift": [
+        "func buildCommandScript() {}",
+    ],
+    "AppShell.swift": [
+        "func launchCommandInTerminal() { try? p.run() }",
+    ],
+    "CopyRunner.swift": [
+        "guard launchCommandInTerminal(cmd) else { return }",
+        "beginOutcomeWatch(logPath: logPath)",
+    ],
+}
+if not launch_evidence_errors(fake_open_only):
+    print("检查器自检失败：把「open 返回 0」当启动成功的写法未被识别")
+    sys.exit(1)
+
 root = pathlib.Path(sys.argv[1])
 files = {p.name: p.read_text(encoding="utf-8").splitlines()
          for p in sorted((root / "src").glob("*.swift"))}
@@ -215,5 +263,12 @@ print("高级选项折叠：" + ("通过（默认收起且值仍接线）" if no
 for e in fold_errs:
     print(f"  ✗ {e}")
 if fold_errs:
+    sys.exit(1)
+
+evidence_errs = launch_evidence_errors(files)
+print("启动实证：" + ("通过（有标记文件、没人只看 open 返回值）" if not evidence_errs else "失败"))
+for e in evidence_errs:
+    print(f"  ✗ {e}")
+if evidence_errs:
     sys.exit(1)
 PY

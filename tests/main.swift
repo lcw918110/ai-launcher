@@ -1191,6 +1191,42 @@ let advChanged = advancedSummary(preserve: false, resume: false, bwlimit: "3.5")
 expectTrue(advChanged.contains("3.5") && advChanged != advDefault, "高级选项摘要: 改过的值要能反映出来")
 
 // ============================================================
+// 23. 启动之后「脚本到底有没有在终端里跑起来」（0.5.5）
+// 背景：`不允许"Sandbox"在"终端"中打开文稿` 这个系统弹窗，程序侧收不到任何回调 ——
+// open 的退出码是 0、NSWorkspace 的 completion error 也是 nil（0.4.9 实测）。
+// 所以唯一可信的证据只能是脚本自己写下的标记文件；判定与兜底文案都做成纯函数，先红后绿。
+// ============================================================
+expectEqual(startMarkerPath(for: "/tmp/a.command"), "/tmp/a.command.started",
+            "启动标记: 落在脚本旁边，随脚本一起过期")
+expectEqual(launchStartVerdict(hasMarker: true, waitedSeconds: 0), LaunchStart.started,
+            "启动判定: 有标记就是跑起来了")
+expectEqual(launchStartVerdict(hasMarker: false, waitedSeconds: 0), LaunchStart.waiting,
+            "启动判定: 刚 open 完不能下结论")
+expectEqual(launchStartVerdict(hasMarker: false, waitedSeconds: launchStartGraceSeconds - 1), .waiting,
+            "启动判定: 时限内继续等")
+expectEqual(launchStartVerdict(hasMarker: false, waitedSeconds: launchStartGraceSeconds), .notStarted,
+            "启动判定: 到时限仍无标记 = 没跑起来（沙箱/门禁拦下）")
+expectEqual(launchStartVerdict(hasMarker: true, waitedSeconds: 99_999), .started,
+            "启动判定: 已经跑起来就不再判失败")
+
+let markedScript = buildCommandScript(cmdLine: "echo hi", pathPrepend: [], autoCloseOnSuccess: false,
+                                      markerPath: "/tmp/_ai_marker_probe.started")
+expectTrue(markedScript.contains("> '/tmp/_ai_marker_probe.started'"),
+           "启动脚本: 首条动作写标记文件")
+expectTrue(markedScript.range(of: "_ai_marker_probe.started")!.lowerBound <
+           markedScript.range(of: "echo hi")!.lowerBound,
+           "启动脚本: 标记必须写在真正命令之前（命令跑挂了也要留痕）")
+expectTrue(zshSyntaxOK(markedScript), "启动脚本: 带标记时 zsh -n 仍通过")
+expectTrue(!simpleScript.contains(".started"), "启动脚本: 不给标记路径时不凭空写标记")
+
+let blockedNotice = launchNotStartedNotice(scriptPath: "/var/folders/x/T/ai-launcher-ABC.command")
+expectTrue(blockedNotice.contains("没跑起来"), "兜底文案: 明确说没跑起来，而不是「已交给终端」")
+expectTrue(blockedNotice.contains("/var/folders/x/T/ai-launcher-ABC.command"), "兜底文案: 给出可手动执行的脚本路径")
+expectTrue(blockedNotice.contains("Sandbox") && blockedNotice.contains("终端"),
+           "兜底文案: 解释那个看不懂的系统弹窗到底在说什么")
+expectTrue(!blockedNotice.contains("已交给 Terminal"), "兜底文案: 不再用「已交给 Terminal」含糊过去")
+
+// ============================================================
 // 汇总
 // ============================================================
 print("\n======== 测试汇总：\(passCount) 通过，\(failures.count) 失败 ========")

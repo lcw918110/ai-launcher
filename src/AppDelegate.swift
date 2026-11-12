@@ -180,6 +180,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             let uiToolShell = !text.isEmpty && !text.contains(" && exec ") &&
                 text.contains("exec \"${SHELL:-/bin/zsh}\" -il") && text.contains("cd '")
             debugLog("[WIRING] 启动脚本收尾 = \(uiToolShell ? "PASS" : "FAIL") 脚本=\(p) 长度=\(text.count)")
+
+            // 0.5.5：脚本内容像不像只是必要条件，真正要验的是「终端有没有执行它」。
+            // 沙箱里 open 返回 0、文稿却被拦下（系统弹「不允许 Sandbox 在终端中打开文稿」），
+            // 所以这里按标记文件判事实，两条分支都必须成立才算 PASS：
+            //   真跑了 → 标记文件存在；没跑 → 兜底文案 + 剪贴板里的脚本路径都在。
+            let marker = lastLaunchMarkerPath
+            var started = !marker.isEmpty && FileManager.default.fileExists(atPath: marker)
+            var waited = 0.0
+            while !started && waited < 3.0 {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+                waited += 0.4
+                started = !marker.isEmpty && FileManager.default.fileExists(atPath: marker)
+            }
+            if started {
+                debugLog("[TDD] 启动实证 = 终端真的执行了脚本 → PASS（标记 \(marker)，等了 \(String(format: "%.1f", waited))s）")
+            } else {
+                let notice = fallbackForNotStartedLaunch(scriptPath: p)
+                let clip = NSPasteboard.general.string(forType: .string) ?? ""
+                let ok = notice.contains("没跑起来") && clip == p && !notice.contains("已交给 Terminal")
+                debugLog("[TDD] 启动实证 = 文稿没被交给终端（本机实例在受限环境里）→ 兜底 \(ok ? "PASS" : "FAIL") 剪贴板=\(clip)")
+            }
         }
 
         // 不再用「控件存在 = true」这种假绿断言：控件被创建了不等于接线了。
@@ -621,6 +642,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     }
 
 
+    // 启动工具一律走这里：open 之后还要盯住「脚本到底有没有跑起来」。
+    // 沙箱/门禁会静默拦下文稿交接（open 仍返回 0），只靠返回值就会「看起来成功、实际什么都没发生」，
+    // 用户那边只看到一个看不懂的系统弹窗 —— 所以没跑起来时要由我们自己说清并给出可走的路（0.5.5）。
+    private func launchToolInTerminal(dir: String, cmd: String) {
+        launchInTerminal(dir: dir, tool: ToolConfig(name: cmd, cmd: cmd))
+        let scriptPath = lastCommandScriptPath
+        guard !scriptPath.isEmpty else { return }
+        watchLaunchStart(scriptPath: scriptPath) { [weak self] notice in
+            self?.copyStatusLabel?.stringValue = notice
+            showLaunchBlockedAlert(notice: notice, scriptPath: scriptPath)
+        }
+    }
+
     @objc func launchTool(_ sender: NSButton) {
         debugLog("按钮点击: \(sender.title) id=\(sender.identifier?.rawValue ?? "nil")")
         guard let id = sender.identifier?.rawValue,
@@ -628,7 +662,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         let parts = id.components(separatedBy: "\u{1}")
         guard parts.count == 3 else { return }
         let dir = parts[1], cmd = parts[2]
-        launchInTerminal(dir: dir, tool: ToolConfig(name: cmd, cmd: cmd))
+        launchToolInTerminal(dir: dir, cmd: cmd)
     }
 
     @objc func otherDirLaunch(_ sender: Any) {
@@ -636,7 +670,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         guard let item = toolPopup.selectedItem,
               let cmd = item.representedObject as? String else { return }
         if let dir = pickOtherDir() {
-            launchInTerminal(dir: dir, tool: ToolConfig(name: cmd, cmd: cmd))
+            launchToolInTerminal(dir: dir, cmd: cmd)
         }
     }
 

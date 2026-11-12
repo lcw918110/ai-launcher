@@ -40,12 +40,26 @@ for name in "$APP_NAME" "$LEGACY_NAME"; do
 done
 sleep 1
 
-open "$APP"
+# —— 重启这一步要分环境（0.5.5）——
+# 在受限沙箱里（自动化 / Agent 跑的 shell、或从沙箱应用里调用）用 open 拉起 GUI 时，
+# 新实例会被 LaunchServices 当成「Sandbox」：它再去 open .command，系统直接拒掉这次文稿交接，
+# 用户点「启动」只会看到「不允许 Sandbox 在终端中打开文稿」，而且程序侧拿不到任何错误码。
+# 这种实例只会污染人工测试，所以宁可不自动重启，把话说清楚。
+SANDBOXED=0
+if [[ -n "${APP_SANDBOX_CONTAINER_ID:-}" ]]; then SANDBOXED=1; fi
+if [[ -n "${CODEBUDDY_SANDBOX_BROKER_SESSION_ID:-}" ]]; then SANDBOXED=1; fi
+if [[ -n "${SANDBOX_CENTER_IPC_ADDRESS:-}" ]]; then SANDBOXED=1; fi
+if [[ "$SANDBOXED" == "1" ]]; then
+  echo "已构建: $APP"
+  echo "未自动重启：当前 shell 处在受限沙箱里，重新拉起的实例会被系统当成「Sandbox」，"
+  echo "点「启动」只会弹「不允许 Sandbox 在终端中打开文稿」。请从 Finder / 普通终端手动打开。"
+else
+  open "$APP"
+  echo "已重新编译并重启: $APP"
+fi
 
 # 旧进程已退出后，把改名前的安装产物移到废纸篓（可恢复，不直接删）
 if [[ -d "$LEGACY_APP" ]] && ! pgrep -x "$LEGACY_NAME" >/dev/null 2>&1; then
   mv "$LEGACY_APP" "$HOME/.Trash/$LEGACY_NAME-$(date +%Y%m%d-%H%M%S).app"
   echo "旧版本已移入废纸篓: $LEGACY_APP"
 fi
-
-echo "已重新编译并重启: $APP"
