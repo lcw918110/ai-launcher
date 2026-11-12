@@ -4,7 +4,7 @@ import Cocoa
 extension AppDelegate {
 
     // 收集并校验表单，得到可用的 CopyParams（开始拷贝 / 本机中转共用）
-    private func makeCopyParams() -> (params: CopyParams?, direction: String, error: String?) {
+    private func makeCopyParams() -> (params: CopyParams?, direction: CopyDirection?, error: String?) {
         var src = copySourceField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         var dst = copyTargetField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -16,17 +16,17 @@ extension AppDelegate {
         let connPort = copyPortField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let connSpec = buildHostSpec(ConnectionInfo(user: connUser, password: "", host: connHost, port: connPort))
 
-        if src.isEmpty && dst.isEmpty { return (nil, "", "请填写源路径和目标路径") }
-        if src.isEmpty { return (nil, "", "请填写源路径") }
-        if dst.isEmpty { return (nil, "", "请填写目标路径") }
+        if src.isEmpty && dst.isEmpty { return (nil, nil, "请填写源路径和目标路径") }
+        if src.isEmpty { return (nil, nil, "请填写源路径") }
+        if dst.isEmpty { return (nil, nil, "请填写目标路径") }
 
         // 用连接信息补全纯路径前缀（仅对非 / 开头、无冒号的路径，视为远端相对路径）
         if !isRemotePath(src) && !src.hasPrefix("/") && !src.contains(":") {
-            if connSpec.isEmpty { return (nil, "", "源路径看起来是远端相对路径，但未填 IP/主机") }
+            if connSpec.isEmpty { return (nil, nil, "源路径看起来是远端相对路径，但未填 IP/主机") }
             src = connSpec + ":" + src
         }
         if !isRemotePath(dst) && !dst.hasPrefix("/") && !dst.contains(":") {
-            if connSpec.isEmpty { return (nil, "", "目标路径看起来是远端相对路径，但未填 IP/主机") }
+            if connSpec.isEmpty { return (nil, nil, "目标路径看起来是远端相对路径，但未填 IP/主机") }
             dst = connSpec + ":" + dst
         }
 
@@ -34,7 +34,7 @@ extension AppDelegate {
         // 限速：留空/0 = 不限速；非数字要明确报错，不能静默当成不限速（用户以为限了其实没限）
         let bwText = copyBwlimitField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let bwKbps = parseBwlimitMBps(bwText) else {
-            return (nil, "", "限速只接受数字（MB/s，可带小数），留空表示不限速；当前填的是「\(bwText)」")
+            return (nil, nil, "限速只接受数字（MB/s，可带小数），留空表示不限速；当前填的是「\(bwText)」")
         }
         let params = CopyParams(
             source: src,
@@ -57,18 +57,17 @@ extension AppDelegate {
         }
         let cfg = loadCopyConfig()
         let built = makeCopyParams()
-        guard let params = built.params else {
+        guard let params = built.params, let direction = built.direction else {
             copyStatusLabel.stringValue = built.error ?? "参数不完整"
             return
         }
-        let direction = built.direction
         // 日志落点按「源 + 目标」哈希固定：续传的多次运行会追加到同一个文件，事后能连起来看
         let logPath = copyLogPath(params: params)
         rememberCurrentCopy(params: params)
 
         // 双远端：直连能不能走必须实测（取决于「源机→目标机」免密，界面上看不出来），
         // 所以先探测再选路，用户只看到一个「开始拷贝」
-        if direction == "direct" {
+        if direction == .direct {
             startDirectResolve(cfg: cfg, params: params, logPath: logPath)
             return
         }
@@ -84,11 +83,11 @@ extension AppDelegate {
         }
         debugLog("[互拷] 方向=\(direction) rsync=\(flavor) 拼装命令: \(cmd)")
 
-        copyStatusLabel.stringValue = direction == "local"
+        copyStatusLabel.stringValue = direction == .local
             ? "本地拷贝：进行中…（Terminal 窗口查看进度）"
             : "进行中…（Terminal 窗口查看进度）"
         // 降级/受限要明说，不能静默（scp 没有断点续传，openrsync 没有进度与明细日志）
-        if direction != "local" {
+        if direction != .local {
             if flavor == .none {
                 copyStatusLabel.stringValue += "（本机无 rsync，已降级 scp，断点续传不可用）"
             } else if flavor == .openRsync {
@@ -98,21 +97,25 @@ extension AppDelegate {
         copyStatusLabel.stringValue += " 日志：\((logPath as NSString).lastPathComponent)"
 
         // 普通执行（非 exec），前后 echo 提示，保留进度与完成提示
-        let fullCmd = "echo '===== 开始拷贝 ====='; " + cmd
-        guard launchCommandInTerminal(fullCmd, autoCloseOnSuccess: true, logPath: logPath,
-                                      startNote: "\(params.source) → \(params.target)") else {
-            copyStatusLabel.stringValue = terminalLaunchFailedText()
-            return
-        }
-        beginOutcomeWatch(logPath: logPath)
+        guard launchCopyScript(cmd, banner: "开始拷贝", logPath: logPath,
+                               startNote: "\(params.source) → \(params.target)") else { return }
     }
 
-    // open 的退出码只在「文件没有、没有程序能打开它」这类错误上可信；
-    // 文稿被系统拦下时它照样返回 0，那种情况由脚本自己回报（见 parseCopyLogOutcome）。
-    func terminalLaunchFailedText() -> String {
-        lastCommandScriptPath.isEmpty
-            ? "无法交给 Terminal（open 返回失败）：检查「系统设置 → 隐私与安全性」后重试"
-            : "无法交给 Terminal（open 返回失败）：可在终端里手动执行 \(lastCommandScriptPath)"
+    // 启动一次拷贝脚本：四条路径（普通 / 直连 / 两段式续传 / tar 流）只差一句横幅，
+    // 统一在这里拼横幅 + 提交判断 + 开始盯结果 —— 否则新增一条路径就会漏掉其中一步。
+    // 返回 false 表示已经在状态栏写完失败原因，调用方直接 return。
+    private func launchCopyScript(_ cmd: String, banner: String, prefix: String = "",
+                                 logPath: String, startNote: String) -> Bool {
+        let line = buildCopyScriptLine(banner: banner, prefix: prefix, cmd: cmd)
+        let report = launchCommandInTerminal(line, autoCloseOnSuccess: true, logPath: logPath,
+                                             startNote: startNote)
+        currentLaunch = report
+        guard report.openSubmitted else {
+            copyStatusLabel.stringValue = report.openFailedNotice
+            return false
+        }
+        beginOutcomeWatch(logPath: logPath)
+        return true
     }
 
     // 轮询日志新增内容，把退出码写回状态栏。
@@ -149,8 +152,8 @@ extension AppDelegate {
         if outcome.started { outcomeHasStarted = true }
         // 标记文件与日志里的「开始」行是同一件事的两个证据：脚本第一条动作就是写标记，
         // 所以 marker 更快也更硬（日志目录不可写时日志会缺，但标记一定在）
-        if !outcomeHasStarted,
-           FileManager.default.fileExists(atPath: startMarkerPath(for: lastCommandScriptPath)) {
+        if !outcomeHasStarted, let marker = currentLaunch?.markerPath,
+           FileManager.default.fileExists(atPath: marker) {
             outcomeHasStarted = true
         }
         let name = (outcomeLogPath as NSString).lastPathComponent
@@ -181,10 +184,11 @@ extension AppDelegate {
             copyStatusLabel?.stringValue = outcomeBaseStatus + " · 已交给 Terminal，等待脚本开始"
         case .notStarted:
             stopOutcomeWatch()
-            let notice = fallbackForNotStartedLaunch(scriptPath: lastCommandScriptPath)
+            let scriptPath = currentLaunch?.scriptPath ?? ""
+            let notice = fallbackForNotStartedLaunch(scriptPath: scriptPath)
             copyStatusLabel?.stringValue = notice
-            debugLog("[互拷] \(launchStartGraceSeconds) 秒仍无启动证据，判定没跑起来: \(lastCommandScriptPath)")
-            showLaunchBlockedAlert(notice: notice, scriptPath: lastCommandScriptPath)
+            debugLog("[互拷] \(launchStartGraceSeconds) 秒仍无启动证据，判定没跑起来: \(scriptPath)")
+            showLaunchBlockedAlert(notice: notice, scriptPath: scriptPath)
         }
     }
 
@@ -262,12 +266,7 @@ extension AppDelegate {
             }
             debugLog("[互拷] 直连（实测通过）: \(cmd)")
             copyStatusLabel.stringValue = "直连：在源机执行 rsync（源机→目标机免密已实测通过）"
-            guard launchCommandInTerminal("echo '===== 开始拷贝（直连）====='; " + cmd,
-                                          autoCloseOnSuccess: true, logPath: logPath, startNote: note) else {
-                copyStatusLabel.stringValue = terminalLaunchFailedText()
-                return
-            }
-            beginOutcomeWatch(logPath: logPath)
+            guard launchCopyScript(cmd, banner: "开始拷贝（直连）", logPath: logPath, startNote: note) else { return }
 
         case .relayResume:
             let cmd = buildRelayResumeCommand(params: params, logPath: logPath,
@@ -281,12 +280,9 @@ extension AppDelegate {
             debugLog("[互拷] 续传式中转（直连不通）: \(cmd)")
             copyStatusLabel.stringValue =
                 "直连不通，已自动改走本机中转（两段 rsync）：源机 → 本机暂存 → 目标机，中断后再点一次即续传"
-            guard launchCommandInTerminal("echo '===== 开始中转（可续传）====='; echo '暂存目录: \(stage.replacingOccurrences(of: "'", with: "'\\''"))'; " + cmd,
-                                          autoCloseOnSuccess: true, logPath: logPath, startNote: note) else {
-                copyStatusLabel.stringValue = terminalLaunchFailedText()
-                return
-            }
-            beginOutcomeWatch(logPath: logPath)
+            guard launchCopyScript(cmd, banner: "开始中转（可续传）",
+                                   prefix: "echo " + shellQuote("暂存目录: " + stage),
+                                   logPath: logPath, startNote: note) else { return }
 
         case .relayTar:
             let cmd = buildRelayCopyCommand(params: params)
@@ -303,12 +299,7 @@ extension AppDelegate {
                 copyStatusLabel.stringValue = "直连不通，已自动改走本机中转（tar 流）：本机无可用 rsync，不占盘但不可续传 " + tarNote
             }
             // tar 流没有 --log-file，日志里只有开始/结束与退出码，明细仍在 Terminal 里
-            guard launchCommandInTerminal("echo '===== 开始中转拷贝 ====='; " + cmd,
-                                          autoCloseOnSuccess: true, logPath: logPath, startNote: note) else {
-                copyStatusLabel.stringValue = terminalLaunchFailedText()
-                return
-            }
-            beginOutcomeWatch(logPath: logPath)
+            guard launchCopyScript(cmd, banner: "开始中转拷贝", logPath: logPath, startNote: note) else { return }
         }
     }
 }

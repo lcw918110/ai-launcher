@@ -298,14 +298,22 @@ func splitRemoteSpec(_ p: String) -> (host: String, port: String, path: String)?
 }
 
 // 由源/目标路径自动推导方向
-// 返回 "push"（本机→远端）/ "pull"（远端→本机）/ "direct"（服务器↔服务器直拷）/ "local"（本机↔本机）
-func deriveDirection(src: String, dst: String) -> String {
+// 用枚举而不是字符串：分支判断（要不要探测直连、要不要按 scp 降级提示）全靠它，
+// "direct" 拼错一个字母编译器不会管。rawValue 只写进日志，保持稳定便于事后复盘。
+enum CopyDirection: String, Equatable {
+    case push       // 本机 → 远端
+    case pull       // 远端 → 本机
+    case direct     // 服务器 ↔ 服务器直拷
+    case local      // 本机 ↔ 本机
+}
+
+func deriveDirection(src: String, dst: String) -> CopyDirection {
     let srcRemote = isRemotePath(src)
     let dstRemote = isRemotePath(dst)
-    if srcRemote && dstRemote { return "direct" }
-    if srcRemote && !dstRemote { return "pull" }
-    if !srcRemote && dstRemote { return "push" }
-    return "local"
+    if srcRemote && dstRemote { return .direct }
+    if srcRemote && !dstRemote { return .pull }
+    if !srcRemote && dstRemote { return .push }
+    return .local
 }
 
 // 用 ssh 列出远端目录内容（BatchMode=yes 禁用密码交互，仅密钥免密可用）
@@ -636,6 +644,39 @@ func launchNotStartedNotice(scriptPath: String) -> String {
         + "脚本已留在 \(scriptPath)，把它粘贴到终端里执行即可。"
 }
 
+// open 本身就没提交成功（文件不见了 / 没有能打开它的程序）：这种情况能同步知道，
+// 和「提交了但没跑起来」是两回事，但要说同一种话 —— 否则用户看到两套失败口径，只会更糊涂
+func launchOpenFailedNotice(scriptPath: String) -> String {
+    let tail = scriptPath.isEmpty
+        ? "（脚本没写出来，检查临时目录权限后重试）"
+        : "脚本已留在 \(scriptPath)，把它粘贴到终端里执行即可。"
+    return "⚠️ 没能交给终端（open 就失败了）：检查「系统设置 → 隐私与安全性」后重试。" + tail
+}
+
+// 一次启动的结果。用值类型返回，调用方拿值自己判断 ——
+// 早先靠两个全局可变变量（lastCommandScriptPath / lastLaunchMarkerPath）传，谁先调用谁覆盖，
+// 自测与生产路径读到彼此的值，属于「时序一变就串味」的状态。
+struct LaunchReport: Equatable {
+    var openSubmitted: Bool      // open 是否成功提交（注意：提交成功 ≠ 跑起来了）
+    var scriptPath: String
+    var markerPath: String       // 脚本跑起来才会出现的标记文件
+
+    static func submitted(scriptPath: String) -> LaunchReport {
+        LaunchReport(openSubmitted: true, scriptPath: scriptPath,
+                     markerPath: startMarkerPath(for: scriptPath))
+    }
+
+    static func openFailed(scriptPath: String) -> LaunchReport {
+        LaunchReport(openSubmitted: false, scriptPath: scriptPath,
+                     markerPath: startMarkerPath(for: scriptPath))
+    }
+
+    // 只在 open 就失败时有内容；「提交了但没跑起来」由 launchNotStartedNotice 负责
+    var openFailedNotice: String {
+        openSubmitted ? "" : launchOpenFailedNotice(scriptPath: scriptPath)
+    }
+}
+
 // 体积文案（暂存目录占用、给用户看，不参与计算）
 func humanSize(_ bytes: Int64) -> String {
     if bytes < 1024 { return "\(bytes) B" }
@@ -914,6 +955,14 @@ func buildRelayCopyCommand(params: CopyParams) -> String {
     let dstCmd = "mkdir -p " + shellQuote(unpackDir) + " && tar -xf - -C " + shellQuote(unpackDir)
     return srcSSH + " " + shellQuote(stripBrackets(s.host)) + " " + shellQuote(srcCmd) +
         " | " + dstSSH + " " + shellQuote(stripBrackets(t.host)) + " " + shellQuote(dstCmd)
+}
+
+// 拷贝脚本正文：横幅 + 可选前置 echo + 命令本身。
+// 横幅以前在 CopyRunner 里手拼了四遍（普通 / 直连 / 两段式续传 / tar 流），多一条路径就多一处漏；
+// 前缀里的路径也手写过单引号转义。收到一个纯函数里，引号统一走 shellQuote。
+func buildCopyScriptLine(banner: String, prefix: String = "", cmd: String) -> String {
+    let bannerLine = "echo " + shellQuote("===== \(banner) =====")
+    return (prefix.isEmpty ? bannerLine : bannerLine + "; " + prefix) + "; " + cmd
 }
 
 // —— 启动工具的命令行（纯函数，可测、可 zsh -n 校验）——

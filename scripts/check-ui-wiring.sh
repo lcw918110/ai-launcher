@@ -133,10 +133,14 @@ def launch_evidence_errors(files):
     body = m.group(0) if m else ""
     if "markerPath" not in body or ": > " not in body:
         errs.append("buildCommandScript 不再写启动标记文件")
-    if "markerPath: markerPath" not in shell:
-        errs.append("launchCommandInTerminal 没有把标记路径传给 buildCommandScript")
-    if "lastLaunchMarkerPath = markerPath" not in shell:
-        errs.append("launchCommandInTerminal 没有记下标记路径（自测/兜底就无从核对）")
+    # 启动结果必须用值类型往返（0.5.6）：两个全局 mutable 谁先调用谁覆盖，自测与生产会读到彼此的值
+    if "-> LaunchReport" not in shell or ".submitted(scriptPath:" not in shell:
+        errs.append("launchCommandInTerminal 没有返回 LaunchReport")
+    for name in ("lastCommandScriptPath", "lastLaunchMarkerPath"):
+        if re.search(r'^var\s+' + name, shell, re.M):
+            errs.append(f"又出现了全局状态 {name}（应走 LaunchReport 返回值）")
+    if "struct LaunchReport" not in core:
+        errs.append("Core 缺少 LaunchReport（启动结果没法用值传递）")
     # 任何真正发起启动的文件，都必须同时判断「有没有跑起来」
     for fname, lines in files.items():
         if fname == "AppShell.swift":
@@ -145,6 +149,11 @@ def launch_evidence_errors(files):
         if "launchCommandInTerminal(" in text and \
                 "launchStartVerdict(" not in text and "watchLaunchStart(" not in text:
             errs.append(f"{fname} 只用 open 的返回值判断启动成功（没有检查启动标记）")
+    # 横幅（===== 开始 xxx =====）只能由 Core 的 buildCopyScriptLine 生成：
+    # 手拼过四遍，每加一条拷贝路径就多一处漏，引号也是各写各的
+    runner = "\n".join(files.get("CopyRunner.swift", []))
+    if "===== " in runner:
+        errs.append("CopyRunner 又手拼了横幅，应走 Core 的 buildCopyScriptLine")
     return errs
 
 
@@ -228,6 +237,18 @@ fake_open_only = {
 }
 if not launch_evidence_errors(fake_open_only):
     print("检查器自检失败：把「open 返回 0」当启动成功的写法未被识别")
+    sys.exit(1)
+
+fake_hand_banner = {
+    "Core.swift": ["func launchStartVerdict() {}", "func startMarkerPath() {}",
+                   "func launchNotStartedNotice() {}", "let launchStartGraceSeconds = 8",
+                   "func buildCommandScript() { markerPath: ; : > }", "struct LaunchReport {}"],
+    "AppShell.swift": ["func launchCommandInTerminal() -> LaunchReport { .submitted(scriptPath: p) }"],
+    "CopyRunner.swift": ['let line = "echo \'===== 开始拷贝 =====\'; " + cmd',
+                         "launchCommandInTerminal(line)", "launchStartVerdict("],
+}
+if not any("buildCopyScriptLine" in e for e in launch_evidence_errors(fake_hand_banner)):
+    print("检查器自检失败：CopyRunner 手拼横幅未被识别")
     sys.exit(1)
 
 root = pathlib.Path(sys.argv[1])

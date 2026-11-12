@@ -220,10 +220,13 @@ expectTrue(splitRemoteSpec("plain") == nil, "splitRemoteSpec: 无冒号返回 ni
 // ============================================================
 // 7. deriveDirection
 // ============================================================
-expectEqual(deriveDirection(src: "/Users/me/data", dst: "user@h:/home/data"), "push", "deriveDirection: 本机→远端")
-expectEqual(deriveDirection(src: "user@h:/home/data", dst: "/Users/me/data"), "pull", "deriveDirection: 远端→本机")
-expectEqual(deriveDirection(src: "user@h:/a", dst: "u@h2:/b"), "direct", "deriveDirection: 双远端直拷")
-expectEqual(deriveDirection(src: "/a", dst: "/b"), "local", "deriveDirection: 双本机")
+expectEqual(deriveDirection(src: "/Users/me/data", dst: "user@h:/home/data"), CopyDirection.push, "deriveDirection: 本机→远端")
+expectEqual(deriveDirection(src: "user@h:/home/data", dst: "/Users/me/data"), CopyDirection.pull, "deriveDirection: 远端→本机")
+expectEqual(deriveDirection(src: "user@h:/a", dst: "u@h2:/b"), CopyDirection.direct, "deriveDirection: 双远端直拷")
+expectEqual(deriveDirection(src: "/a", dst: "/b"), CopyDirection.local, "deriveDirection: 双本机")
+// rawValue 只在日志里出现，但一旦改了会破坏事后复盘的可读性，顺手锁住
+expectEqual(CopyDirection.push.rawValue, "push", "CopyDirection: rawValue 稳定")
+expectEqual(CopyDirection.direct.rawValue, "direct", "CopyDirection: 直拷 rawValue 稳定")
 
 // ============================================================
 // 8. buildCopyCommand（命令拼装 + 自定义端口 + scp 降级）
@@ -1225,6 +1228,41 @@ expectTrue(blockedNotice.contains("/var/folders/x/T/ai-launcher-ABC.command"), "
 expectTrue(blockedNotice.contains("Sandbox") && blockedNotice.contains("终端"),
            "兜底文案: 解释那个看不懂的系统弹窗到底在说什么")
 expectTrue(!blockedNotice.contains("已交给 Terminal"), "兜底文案: 不再用「已交给 Terminal」含糊过去")
+
+// ============================================================
+// 24. 技术债清理（0.5.6）：启动结果用值类型传，不再靠全局变量
+// 背景：`lastCommandScriptPath` / `lastLaunchMarkerPath` 是两个跨文件全局 mutable，
+// 谁先调用谁覆盖 —— 0.5.0 的假绿和 0.5.5「自测读到上一份脚本」都出在这里。
+// 现在改成 launchCommandInTerminal 返回 LaunchReport，调用方拿值，不再有共享状态。
+// ============================================================
+let okReport = LaunchReport.submitted(scriptPath: "/tmp/x/ai-launcher-A.command")
+expectTrue(okReport.openSubmitted, "启动报告: 提交成功标记为 true")
+expectEqual(okReport.markerPath, startMarkerPath(for: "/tmp/x/ai-launcher-A.command"),
+            "启动报告: 标记路径由脚本路径派生，调用方不用自己拼")
+expectTrue(okReport.openFailedNotice.isEmpty, "启动报告: 成功提交时没有失败文案")
+
+let badReport = LaunchReport.openFailed(scriptPath: "/tmp/x/ai-launcher-B.command")
+expectTrue(!badReport.openSubmitted, "启动报告: open 失败要如实标 false")
+expectTrue(badReport.openFailedNotice.contains("/tmp/x/ai-launcher-B.command"),
+           "启动报告: open 失败文案给出可手动执行的脚本路径")
+expectTrue(badReport.openFailedNotice.contains("终端"), "启动报告: open 失败文案说清是没交给终端")
+expectTrue(!badReport.openFailedNotice.contains("已交给 Terminal"),
+           "启动报告: 不再用「已交给 Terminal」这种把失败说成成功的话")
+
+// 拷贝脚本正文：横幅 + 可选前置 echo + 命令。
+// 这行以前在 CopyRunner 里手拼了四遍（普通/直连/两段式续传/tar 流），多一条路径就多一处漏；
+// 前缀里的路径还手写过单引号转义。合成一个纯函数后就能在这里锁住。
+expectEqual(buildCopyScriptLine(banner: "开始拷贝", cmd: "rsync -r a b"),
+            "echo '===== 开始拷贝 ====='; rsync -r a b",
+            "拷贝脚本正文: 只有横幅时拼成 横幅 + 命令")
+// 横幅统一成「===== 文本 =====」（两边都留空格）：旧代码里「开始拷贝」带空格、
+// 「开始中转（可续传）」不带，纯手拼留下的不一致
+expectEqual(buildCopyScriptLine(banner: "开始中转（可续传）", prefix: "echo '暂存目录: /tmp/a'",
+                                cmd: "rsync -r a b"),
+            "echo '===== 开始中转（可续传） ====='; echo '暂存目录: /tmp/a'; rsync -r a b",
+            "拷贝脚本正文: 前置 echo 插在横幅之后、命令之前")
+expectTrue(zshSyntaxOK(buildCopyScriptLine(banner: "带'引号", prefix: "echo 'x y'", cmd: "true")),
+           "拷贝脚本正文: 横幅含单引号也不破坏 zsh 语法（统一走 shellQuote）")
 
 // ============================================================
 // 汇总

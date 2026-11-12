@@ -3,6 +3,18 @@
 版本号遵循「主版本.次版本.修订号」，1.0 之前每次成批改动升次版本号。安装包版本以 `src/Info.plist` 的
 `CFBundleShortVersionString` 为准，构建脚本原样拷入 `.app`。
 
+## 0.5.6 — 2026-11-12
+
+清一轮技术债：把「时序一变就串味」的全局状态、含糊的字符串方向、四遍手拼的横幅都收掉。**不改界面行为**，仍按 TDD 先红灯后绿灯。
+
+- **全局可变状态 → 值传递**：`launchCommandInTerminal` 原来把脚本路径写进两个全局 `var`（`lastCommandScriptPath` / `lastLaunchMarkerPath`），`CopyRunner` 与 GUI 自测各自去读 —— 谁先调用谁覆盖，0.5.0 的假绿与 0.5.5「自测读到上一份脚本」都出在这里。改成返回 `LaunchReport`（`openSubmitted` / `scriptPath` / `markerPath`，两个工厂 `submitted` / `openFailed`，标记路径自动派生），调用方拿值判断；自测读的是 `AppDelegate.lastLaunchReport`，不再有跨文件共享状态。
+- **失败口径统一**：删掉 `terminalLaunchFailedText()`（以 `open` 退出码为准，而文稿被拦时 open 仍返回 0，几乎不可达）。`open` 就失败 → `LaunchReport.openFailedNotice`；提交了但没跑起来 → `launchNotStartedNotice`。两种情况说同一种话，都不再用「已交给 Terminal」把失败说成成功。
+- **方向从字符串改枚举**：`deriveDirection` 返回 `CopyDirection`（`push`/`pull`/`direct`/`local`），`direction == "direct"` 这类比较改 `== .direct`；rawValue 保持稳定（日志复盘还靠它）。
+- **四条拷贝路径的横幅收进纯函数**：普通 / 直连 / 两段式续传 / tar 流原来各写一遍 `"echo '===== 开始…====='; " + cmd`，其中一处还手写单引号转义。新增 `buildCopyScriptLine(banner:prefix:cmd:)`，引号统一走 `shellQuote`，顺带把横幅格式统一成「===== 文本 =====」（旧代码有一个不带空格）。
+- **门禁**：`check-ui-wiring.sh` 的「启动实证」项补三条 —— 必须返回 `LaunchReport`、不许再出现那两个全局 `var`、`CopyRunner` 不许手拼横幅；各带假代码自检。
+- **验证**：红灯 —— `CopyDirection` / `LaunchReport` / `buildCopyScriptLine` 不存在（编译失败），随后 `buildCopyScriptLine` 1 条期望红（横幅空格不一致被我抓出来，顺手统一）。绿灯 —— Core **453 条**全绿；GUI 自测 `启动脚本收尾 PASS`、`启动实证 → 兜底 PASS`、`解析回填 6/6`、`界面接线 5/5`、`按钮覆盖契约 PASS`、`人工反馈四连 9/9`；三道门禁全过。
+- **文档**：docs/03（§4 补 LaunchReport 与拷贝正文纯函数）、docs/05（断言数与新增三组）、docs/06（G-30）、README、CHANGELOG、Info.plist（0.5.6 / build 20）同步。
+
 ## 0.5.5 — 2026-11-12
 
 启动不再「看起来成功、实际没跑」：查清「不允许 Sandbox 在终端中打开文稿」的根因，改成按事实判定 + 兜底。仍按 TDD 先红灯后绿灯。

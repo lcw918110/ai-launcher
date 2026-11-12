@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var outcomeBaseStatus = ""           // 轮询期间保留「走的哪条路」这句，只在其后追加已运行时长
     var outcomeHasStarted = false        // 日志里出现过脚本层的「开始」行 = 拷贝真的在跑
     var outcomeStartedAt = Date()
+    var currentLaunch: LaunchReport?      // 本次拷贝的启动结果（脚本路径 + 启动标记，用来判「真的跑起来了」）
     var lastPathField: NSTextField?        // 最近聚焦过的路径框（源/目标）；「解析」据此决定往哪个框回填
     var pathFocusObserver: NSObjectProtocol?  // 直接听 textDidBeginEditing 通知，不只看 delegate 回调
     var contentStack: NSStackView!        // 滚动视图里的内容栈（自测与刷新用）
@@ -35,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     var suggestions: SuggestionController?      // 非阻塞候选框
     var suggestionTimer: Timer?                 // 输入去抖
     var isBrowsingRemote = false                // 远端浏览进行中（防重入）
+    var lastLaunchReport: LaunchReport?          // 最近一次工具启动的结果（自测据此核对「真的跑起来了」）
 
     deinit {
         if let observer = pathFocusObserver { NotificationCenter.default.removeObserver(observer) }
@@ -175,7 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         if !didClickLaunch {
             debugLog("[WIRING] 启动脚本收尾 = SKIP（--no-launch 未点击启动按钮）")
         } else {
-            let p = lastCommandScriptPath
+            let p = lastLaunchReport?.scriptPath ?? ""
             let text = (try? String(contentsOfFile: p, encoding: .utf8)) ?? ""
             let uiToolShell = !text.isEmpty && !text.contains(" && exec ") &&
                 text.contains("exec \"${SHELL:-/bin/zsh}\" -il") && text.contains("cd '")
@@ -185,7 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             // 沙箱里 open 返回 0、文稿却被拦下（系统弹「不允许 Sandbox 在终端中打开文稿」），
             // 所以这里按标记文件判事实，两条分支都必须成立才算 PASS：
             //   真跑了 → 标记文件存在；没跑 → 兜底文案 + 剪贴板里的脚本路径都在。
-            let marker = lastLaunchMarkerPath
+            let marker = lastLaunchReport?.markerPath ?? ""
             var started = !marker.isEmpty && FileManager.default.fileExists(atPath: marker)
             var waited = 0.0
             while !started && waited < 3.0 {
@@ -646,12 +648,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     // 沙箱/门禁会静默拦下文稿交接（open 仍返回 0），只靠返回值就会「看起来成功、实际什么都没发生」，
     // 用户那边只看到一个看不懂的系统弹窗 —— 所以没跑起来时要由我们自己说清并给出可走的路（0.5.5）。
     private func launchToolInTerminal(dir: String, cmd: String) {
-        launchInTerminal(dir: dir, tool: ToolConfig(name: cmd, cmd: cmd))
-        let scriptPath = lastCommandScriptPath
-        guard !scriptPath.isEmpty else { return }
-        watchLaunchStart(scriptPath: scriptPath) { [weak self] notice in
+        let report = launchInTerminal(dir: dir, tool: ToolConfig(name: cmd, cmd: cmd))
+        lastLaunchReport = report
+        guard report.openSubmitted else {
+            // 连提交都没成功（文件写不出来 / 没有能打开它的程序）：同步就能知道，别等标记超时
+            copyStatusLabel?.stringValue = report.openFailedNotice
+            showLaunchBlockedAlert(notice: report.openFailedNotice, scriptPath: report.scriptPath)
+            return
+        }
+        watchLaunchStart(scriptPath: report.scriptPath) { [weak self] notice in
             self?.copyStatusLabel?.stringValue = notice
-            showLaunchBlockedAlert(notice: notice, scriptPath: scriptPath)
+            showLaunchBlockedAlert(notice: notice, scriptPath: report.scriptPath)
         }
     }
 

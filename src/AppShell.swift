@@ -9,14 +9,12 @@ final class FlippedView: NSView {
 
 
 // 免授权启动：写临时 .command 文件并 open，Terminal 新窗口执行
-func launchInTerminal(dir: String, tool: ToolConfig) {
+@discardableResult
+func launchInTerminal(dir: String, tool: ToolConfig) -> LaunchReport {
     debugLog("launchInTerminal dir=\(dir) cmd=\(tool.cmd)")
     // 收尾逻辑在 Core 纯函数里（可测、可 zsh -n 校验）：退出 CLI 后回到可用 shell
-    launchCommandInTerminal(buildToolLaunchLine(dir: dir, cmd: tool.cmd))
+    return launchCommandInTerminal(buildToolLaunchLine(dir: dir, cmd: tool.cmd))
 }
-
-var lastCommandScriptPath = ""   // 最近一份启动脚本；open 失败时用来告诉用户手动执行哪一份
-var lastLaunchMarkerPath = ""    // 与上面那份脚本配套的「真的跑起来了」标记文件
 
 // 兜底：把脚本路径放进剪贴板，并返回一段能直接显示的话。
 // 为什么必须有这条兜底：`.command` 交给 Terminal 是单向通道，被沙箱/门禁拦下时程序拿不到
@@ -64,11 +62,11 @@ func showLaunchBlockedAlert(notice: String, scriptPath: String) {
 // 通用：把任意命令行写入临时 .command 文件，open 到 Terminal 执行（免授权、真 TTY 可交互输密码）
 // autoCloseOnSuccess：命令退出码为 0 时，短暂展示完成提示后自动关闭 Terminal 窗口（用于拷贝等一次性任务）
 // logPath：非空时把「开始/结束 + 退出码」写进日志（rsync 明细由 --log-file 写同一个文件）
-// 返回：open 是否成功提交。注意 void 通道的局限见 parseCopyLogOutcome 的注释 ——
-// open 返回 0 只代表「请求已交给 LaunchServices」，文稿被拦时它照样返回 0。
+// 返回 LaunchReport：openSubmitted 只代表「请求已交给 LaunchServices」，文稿被拦时它照样为 true ——
+// 「到底跑起来没有」要看 markerPath 那个文件（见 launchStartVerdict）
 @discardableResult
 func launchCommandInTerminal(_ cmdLine: String, autoCloseOnSuccess: Bool = false,
-                             logPath: String = "", startNote: String = "") -> Bool {
+                             logPath: String = "", startNote: String = "") -> LaunchReport {
     debugLog("launchCommandInTerminal cmd=\(cmdLine) autoClose=\(autoCloseOnSuccess) log=\(logPath)")
     let pathPrepend = loadPathPrepend()
     debugLog("启动脚本 PATH 前缀: \(pathPrepend.joined(separator: ":"))")
@@ -85,15 +83,13 @@ func launchCommandInTerminal(_ cmdLine: String, autoCloseOnSuccess: Bool = false
                                      markerPath: markerPath)
     try? content.write(toFile: path, atomically: true, encoding: .utf8)
     chmod(path, 0o755)
-    lastCommandScriptPath = path
-    lastLaunchMarkerPath = markerPath
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
     p.arguments = [path]
     do { try p.run() } catch {
         debugLog("[启动] open 无法执行: \(error)")
         cleanupOldCommandFiles()
-        return false
+        return .openFailed(scriptPath: path)
     }
     p.waitUntilExit()
     // open 对「文稿被拦」不报错，但对「文件不存在 / 没有能打开它的程序」会返回非 0 —— 这类才抓得住
@@ -102,7 +98,7 @@ func launchCommandInTerminal(_ cmdLine: String, autoCloseOnSuccess: Bool = false
     }
     // 顺带清理超过 1 天的旧启动文件
     cleanupOldCommandFiles()
-    return p.terminationStatus == 0
+    return p.terminationStatus == 0 ? .submitted(scriptPath: path) : .openFailed(scriptPath: path)
 }
 
 func cleanupOldCommandFiles() {
