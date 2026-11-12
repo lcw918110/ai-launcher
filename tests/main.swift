@@ -7,12 +7,29 @@ import Foundation
 var passCount = 0
 var failures: [String] = []
 
+// 分组统计：以前 1200 多行顺序跑，红一条要往上翻几百行才知道是哪组。
+// section() 只做记账，不改任何断言；失败项前缀写组名，汇总时按组报分数。
+struct SectionStat { var name: String; var passed: Int; var failed: Int }
+var currentSection = "(未分组)"
+var sectionPassedBase = 0
+var sectionFailedBase = 0
+var sectionStats: [SectionStat] = []
+
+func section(_ name: String) {
+    sectionStats.append(SectionStat(name: currentSection,
+                                    passed: passCount - sectionPassedBase,
+                                    failed: failures.count - sectionFailedBase))
+    currentSection = name
+    sectionPassedBase = passCount
+    sectionFailedBase = failures.count
+}
+
 func expectEqual<T: Equatable>(_ got: T, _ want: T, _ label: String) {
     if got == want {
         passCount += 1
         print("PASS \(label)")
     } else {
-        failures.append(label)
+        failures.append("[\(currentSection)] \(label)")
         print("FAIL \(label)\n      got  = \(got)\n      want = \(want)")
     }
 }
@@ -22,7 +39,7 @@ func expectTrue(_ cond: Bool, _ label: String, _ detail: String = "") {
         passCount += 1
         print("PASS \(label)")
     } else {
-        failures.append(label)
+        failures.append("[\(currentSection)] \(label)")
         print("FAIL \(label) \(detail)")
     }
 }
@@ -30,6 +47,9 @@ func expectTrue(_ cond: Bool, _ label: String, _ detail: String = "") {
 // ============================================================
 // 1. looksLikeHost
 // ============================================================
+print("")
+print("")
+section("1. looksLikeHost")
 expectTrue(looksLikeHost("192.168.1.5"), "looksLikeHost: 纯 IPv4")
 expectTrue(looksLikeHost("example.com"), "looksLikeHost: 域名")
 expectTrue(!looksLikeHost("user@host"), "looksLikeHost: 含 @ 不是主机")
@@ -40,6 +60,9 @@ expectTrue(!looksLikeHost("hostname"), "looksLikeHost: 无点主机名按非主�
 // ============================================================
 // 2. splitHostPort
 // ============================================================
+print("")
+print("")
+section("2. splitHostPort")
 expectEqual(splitHostPort("host").host, "host", "splitHostPort: 无端口 host")
 expectTrue(splitHostPort("host").port.isEmpty, "splitHostPort: 无端口 port 为空")
 expectEqual(splitHostPort("host:2222").host, "host", "splitHostPort: 带端口 host")
@@ -52,6 +75,9 @@ expectEqual(splitHostPort("user@host:2222").port, "2222", "splitHostPort: user@h
 // ============================================================
 // 3. parseConnection（全格式 + 回归）
 // ============================================================
+print("")
+print("")
+section("3. parseConnection（全格式 + 回归）")
 func pc(_ s: String) -> ConnectionInfo { parseConnection(s) }
 
 var r = pc("user@host")
@@ -140,6 +166,9 @@ expectTrue(r.host.isEmpty && r.user.isEmpty, "parse 空串返回全空")
 // ============================================================
 // 4. buildHostSpec
 // ============================================================
+print("")
+print("")
+section("4. buildHostSpec")
 expectEqual(buildHostSpec(ConnectionInfo(user: "user", password: "", host: "192.168.1.5", port: "")),
             "user@192.168.1.5", "buildHostSpec: 无端口")
 expectEqual(buildHostSpec(ConnectionInfo(user: "user", password: "", host: "192.168.1.5", port: "2222")),
@@ -150,6 +179,9 @@ expectEqual(buildHostSpec(ConnectionInfo(user: "", password: "", host: "h", port
 // ============================================================
 // 5. shellQuote / remotePathArg / maskSecret
 // ============================================================
+print("")
+print("")
+section("5. shellQuote / remotePathArg / maskSecret")
 expectEqual(shellQuote("a b"), "'a b'", "shellQuote: 空格")
 expectEqual(shellQuote("a'b"), "'a'\\''b'", "shellQuote: 单引号")
 
@@ -166,6 +198,9 @@ expectEqual(maskSecret("secret"), "***", "maskSecret: 非空脱敏")
 // ============================================================
 // 6. isRemotePath / splitRemotePath / splitRemoteSpec
 // ============================================================
+print("")
+print("")
+section("6. isRemotePath / splitRemotePath / splitRemoteSpec")
 expectTrue(!isRemotePath("/Users/me/data"), "isRemotePath: 本地绝对路径")
 expectTrue(isRemotePath("user@host:/home/data"), "isRemotePath: user@host:path")
 expectTrue(isRemotePath("host:path"), "isRemotePath: host:path")
@@ -220,6 +255,9 @@ expectTrue(splitRemoteSpec("plain") == nil, "splitRemoteSpec: 无冒号返回 ni
 // ============================================================
 // 7. deriveDirection
 // ============================================================
+print("")
+print("")
+section("7. deriveDirection")
 expectEqual(deriveDirection(src: "/Users/me/data", dst: "user@h:/home/data"), CopyDirection.push, "deriveDirection: 本机→远端")
 expectEqual(deriveDirection(src: "user@h:/home/data", dst: "/Users/me/data"), CopyDirection.pull, "deriveDirection: 远端→本机")
 expectEqual(deriveDirection(src: "user@h:/a", dst: "u@h2:/b"), CopyDirection.direct, "deriveDirection: 双远端直拷")
@@ -231,6 +269,9 @@ expectEqual(CopyDirection.direct.rawValue, "direct", "CopyDirection: 直拷 rawV
 // ============================================================
 // 8. buildCopyCommand（命令拼装 + 自定义端口 + scp 降级）
 // ============================================================
+print("")
+print("")
+section("8. buildCopyCommand（命令拼装 + 自定义端口 + scp 降级）")
 let cfg = CopyConfig(defaultFlags: [])
 func cmd(_ source: String, _ target: String,
          preserveAttrs: Bool = true, resume: Bool = true,
@@ -302,6 +343,9 @@ for (label, c) in [
 // ============================================================
 // 9. buildFillPlan（填充决策六场景，覆盖串框 bug 回归）
 // ============================================================
+print("")
+print("")
+section("9. buildFillPlan（填充决策六场景，覆盖串框 bug 回归）")
 let spec = "user@192.0.2.102"
 var p = buildFillPlan(trigger: .target, spec: spec,
                       sourceEmpty: true, targetEmpty: true, connEmpty: true, hostEmpty: true, userEmpty: true)
@@ -335,6 +379,9 @@ expectEqual(p.targetValue, "\(spec):", "fillPlan 场景6: 目标框触发-源已
 // ============================================================
 // 10. 配置读写（合法 / 损坏 JSON / 废弃键兼容 / 缺省去本机化）
 // ============================================================
+print("")
+print("")
+section("10. 配置读写（合法 / 损坏 JSON / 废弃键兼容 / 缺省去本机化）")
 let tmpDir = NSTemporaryDirectory() + "ai-launcher-tests-\(UUID().uuidString)"
 try? FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
 
@@ -387,6 +434,9 @@ expectEqual(lcKeep.dirs, ["/custom"], "ensureConfigExists: 已存在不覆盖")
 // ============================================================
 // 11. loadSSHKnownHosts（通配符跳过 / HostName / User）
 // ============================================================
+print("")
+print("")
+section("11. loadSSHKnownHosts（通配符跳过 / HostName / User）")
 let sshPath = tmpDir + "/ssh_config"
 let sshConf = """
 Host *
@@ -410,6 +460,9 @@ expectTrue(loadSSHKnownHosts(path: tmpDir + "/not-exist").isEmpty, "loadSSHKnown
 // ============================================================
 // 12. sshListDir 优雅失败（不可达主机）
 // ============================================================
+print("")
+print("")
+section("12. sshListDir 优雅失败（不可达主机）")
 let sl = sshListDir(hostSpec: "nonexistent-host.invalid", path: "~")
 expectTrue(!sl.ok, "sshListDir: 不可达主机返回失败")
 expectTrue(!sl.error.isEmpty, "sshListDir: 失败时带回错误信息")
@@ -417,6 +470,9 @@ expectTrue(!sl.error.isEmpty, "sshListDir: 失败时带回错误信息")
 // ============================================================
 // 13. IPv6（方括号写法）
 // ============================================================
+print("")
+print("")
+section("13. IPv6（方括号写法）")
 expectEqual(splitHostPort("[::1]").host, "[::1]", "IPv6: 方括号主机")
 expectTrue(splitHostPort("[::1]").port.isEmpty, "IPv6: 方括号无端口")
 expectEqual(splitHostPort("[::1]:2222").host, "[::1]", "IPv6: 方括号+端口 host")
@@ -447,6 +503,9 @@ expectEqual(r.port, "2222", "IPv6: parseConnection port")
 // ============================================================
 // 14. PATH 前缀（可配置，不再硬编码）
 // ============================================================
+print("")
+print("")
+section("14. PATH 前缀（可配置，不再硬编码）")
 expectEqual(buildPathExport(["~/.bun/bin", "/opt/homebrew/bin"]),
             "export PATH=\"$HOME/.bun/bin:/opt/homebrew/bin:$PATH\"", "buildPathExport: ~ 展开为 $HOME")
 expectEqual(buildPathExport([]), "", "buildPathExport: 空数组不输出")
@@ -465,6 +524,9 @@ expectEqual(loadPathPrepend(path: customPathConfig), ["/opt/x/bin", "/opt/y/bin"
 // ============================================================
 // 15. 远端路径导航（浏览远端：进入下一层 / 上一级）
 // ============================================================
+print("")
+print("")
+section("15. 远端路径导航（浏览远端：进入下一层 / 上一级）")
 expectEqual(remoteJoin(base: "~", name: "data"), "~/data", "remoteJoin: ~ + data")
 expectEqual(remoteJoin(base: "~/data", name: "sub"), "~/data/sub", "remoteJoin: ~/data + sub")
 expectEqual(remoteJoin(base: "/", name: "var"), "/var", "remoteJoin: / + var")
@@ -488,6 +550,9 @@ expectEqual(splitDirAndName("rel").dir, ".", "splitDirAndName: 相对路径")
 // ============================================================
 // 16. buildRelayCopyCommand（直拷失败的一键中转）
 // ============================================================
+print("")
+print("")
+section("16. buildRelayCopyCommand（直拷失败的一键中转）")
 expectEqual(buildRelayCopyCommand(params: CopyParams(
                 source: "user@192.168.1.5:/data/a", target: "user@192.168.1.6:/data/b",
                 preserveAttrs: true, resume: true)),
@@ -529,6 +594,8 @@ expectTrue(tarContainerCmd.contains("mkdir -p '\\''/backup/2026'\\''"),
 // ============================================================
 // 16b. 可续传中转（两段 rsync + 稳定暂存目录）
 // ============================================================
+print("")
+section("17. 可续传中转（两段 rsync + 稳定暂存目录）")
 let relayRoot = "/tmp/relay-root"
 let relayParams = CopyParams(source: "user@192.168.1.5:/data/big.iso",
                              target: "user@192.168.1.6:/data/dst",
@@ -577,6 +644,9 @@ expectEqual(buildRelayResumeCommand(params: CopyParams(source: "/local/a", targe
 // ============================================================
 // 17. buildCommandScript（Terminal 启动脚本：PATH 注入 / tty 精确关窗 / 语法校验）
 // ============================================================
+print("")
+print("")
+section("18. buildCommandScript（Terminal 启动脚本：PATH 注入 / tty 精确关窗 / 语法校验）")
 let script = buildCommandScript(cmdLine: "echo hi", pathPrepend: ["~/.bun/bin"], autoCloseOnSuccess: true)
 expectTrue(script.hasPrefix("#!/bin/zsh"), "buildCommandScript: shebang")
 expectTrue(script.contains("export PATH=\"$HOME/.bun/bin:$PATH\""), "buildCommandScript: 注入 PATH 前缀")
@@ -608,8 +678,11 @@ expectTrue(zshSyntaxOK(script), "buildCommandScript: 一次性脚本 zsh -n 语�
 expectTrue(zshSyntaxOK(simpleScript), "buildCommandScript: 普通脚本 zsh -n 语法通过")
 
 // ============================================================
-// 17. dirLabel / sshConfigPath / fileModificationDate
+// 18. dirLabel / sshConfigPath / fileModificationDate
 // ============================================================
+print("")
+print("")
+section("19. dirLabel / sshConfigPath / fileModificationDate")
 // dirLabel：启动网格按钮标题 = 目录最后一段
 expectEqual(dirLabel("/Users/me/project"), "project", "dirLabel: 常规绝对路径")
 expectEqual(dirLabel("/Users/me/project/"), "project", "dirLabel: 忽略尾部斜杠")
@@ -633,8 +706,11 @@ expectTrue(fileModificationDate(mtimeProbe + ".not-exist") == nil, "fileModifica
 try? FileManager.default.removeItem(atPath: mtimeProbe)
 
 // ============================================================
-// 18. remoteHostSepIndex（远端规格 host/path 边界，IPv6 关键路径）
+// 19. remoteHostSepIndex（远端规格 host/path 边界，IPv6 关键路径）
 // ============================================================
+print("")
+print("")
+section("20. remoteHostSepIndex（远端规格 host/path 边界，IPv6 关键路径）")
 func sepSplit(_ p: String) -> String {
     guard let idx = remoteHostSepIndex(p) else { return "<nil>" }
     return String(p[..<idx]) + " | " + String(p[p.index(after: idx)...])
@@ -651,8 +727,11 @@ expectEqual(sepSplit("/Users/me/data"), "<nil>", "remoteHostSepIndex: 本地绝�
 expectEqual(sepSplit("no-colon"), "<nil>", "remoteHostSepIndex: 无冒号返回 nil")
 
 // ============================================================
-// 19. shortHash / relayStagingRoot / relayStagingDir 边界
+// 20. shortHash / relayStagingRoot / relayStagingDir 边界
 // ============================================================
+print("")
+print("")
+section("21. shortHash / relayStagingRoot / relayStagingDir 边界")
 // shortHash：暂存目录名的一部分，必须稳定，否则第二次运行接不上续传
 expectEqual(shortHash("same-input"), shortHash("same-input"), "shortHash: 同输入稳定")
 expectTrue(shortHash("a") != shortHash("b"), "shortHash: 不同输入不同")
@@ -686,8 +765,11 @@ expectEqual(relayStagingDir(params: spacedParams, root: "/tmp/relay-root"), spac
             "relayStagingDir: 含空格时仍稳定（续传前提）")
 
 // ============================================================
-// 20. 环境探测与日志：hasRsync / debugLog
+// 21. 环境探测与日志：hasRsync / debugLog
 // ============================================================
+print("")
+print("")
+section("22. 环境探测与日志：hasRsync / debugLog")
 // hasRsync 与 shell 的判断必须一致：UI 靠它决定 rsync / scp / 续传式中转
 let shellHasRsync = { () -> Bool in
     let p = Process()
@@ -710,8 +792,11 @@ expectTrue(logText.contains(logMarker), "debugLog: 写入内容可在日志中�
 expectEqual(logText.components(separatedBy: logMarker).count - 1, 2, "debugLog: 两次调用都追加（不覆盖）")
 
 // ============================================================
-// 21. 补充边界：IPv6 远端判定 / parseConnection 容错 / 本地拷贝降级
+// 22. 补充边界：IPv6 远端判定 / parseConnection 容错 / 本地拷贝降级
 // ============================================================
+print("")
+print("")
+section("23. 补充边界：IPv6 远端判定 / parseConnection 容错 / 本地拷贝降级")
 expectTrue(isRemotePath("user@[::1]:/data"), "isRemotePath: user@[::1]:path")
 expectTrue(isRemotePath("[::1]:/data"), "isRemotePath: [::1]:path")
 expectTrue(!isRemotePath("::1"), "isRemotePath: 裸 IPv6 不误判")
@@ -734,8 +819,11 @@ expectEqual(cmd("/Users/me/a", "/Users/me/b", rsync: false),
             "buildCopyCommand: 本地拷贝无 rsync 降级 scp")
 
 // ============================================================
-// 18. 限速（--bwlimit / scp -l）
+// 23. 限速（--bwlimit / scp -l）
 // ============================================================
+print("")
+print("")
+section("24. 限速（--bwlimit / scp -l）")
 expectEqual(parseBwlimitMBps(""), 0, "bwlimit: 空串 = 不限速")
 expectEqual(parseBwlimitMBps("   "), 0, "bwlimit: 全空格 = 不限速")
 expectEqual(parseBwlimitMBps("10"), 10240, "bwlimit: 10 MB/s → 10240 KiB/s")
@@ -767,8 +855,11 @@ expectEqual(cmdBW("/Users/me/a", "/Users/me/b", kbps: 10240, rsync: false),
             "buildCopyCommand: scp 降级用 -l（Kbit/s = KiB/s × 8）")
 
 // ============================================================
-// 19. 传输日志路径（--log-file）
+// 24. 传输日志路径（--log-file）
 // ============================================================
+print("")
+print("")
+section("25. 传输日志路径（--log-file）")
 expectEqual(safeFileComponent("report.tar.gz"), "report.tar.gz", "safeFileComponent: 正常名不变")
 expectEqual(safeFileComponent("a/b:c d"), "a_b_c_d", "safeFileComponent: 路径分隔符与空格替换")
 expectEqual(safeFileComponent("."), "", "safeFileComponent: 纯点名清洗后为空")
@@ -812,8 +903,11 @@ expectEqual(relayWithLog.components(separatedBy: "--bwlimit=2048").count - 1, 2,
             "buildRelayResumeCommand: 两段都限速")
 
 // ============================================================
-// 20. 上次互拷任务（last-copy.json）
+// 25. 上次互拷任务（last-copy.json）
 // ============================================================
+print("")
+print("")
+section("26. 上次互拷任务（last-copy.json）")
 let mem = CopyMemory(source: "user@h:/data", target: "/Users/me/backup",
                      preserveAttrs: false, resume: true, bwlimitMBps: "10")
 let memData = encodeCopyMemory(mem)!
@@ -840,8 +934,11 @@ expectEqual(copyMemoryPath(home: "/Users/me"), "/Users/me/.config/ai-launcher/la
             "memory: 落点与 config 同目录")
 
 // ============================================================
-// 21. 带日志的启动脚本
+// 26. 带日志的启动脚本
 // ============================================================
+print("")
+print("")
+section("27. 带日志的启动脚本")
 let logScript = buildCommandScript(cmdLine: "echo hi", pathPrepend: [], autoCloseOnSuccess: true,
                                    logPath: "/tmp/la-logs/x.log", startNote: "user@h:/a → /b")
 expectTrue(logScript.contains("mkdir -p '/tmp/la-logs'"), "logScript: 先建日志目录")
@@ -866,6 +963,8 @@ expectTrue(!plainScript.contains("mkdir -p"), "logScript: 不传日志路径时�
 // 背景：中转不再由用户点按钮，改成「后台测直连，不通自动中转」。
 // 这里把三件前提锁住：rsync 实现要认得出、探测命令要只连主机不带路径、选路要覆盖四种组合
 // ============================================================
+print("")
+section("28. rsync 实现识别 / 可达性探测 / 双远端选路")
 
 // —— rsync 实现：openrsync 不认 --info=progress2 / --log-file，必须与 GNU 区分开 ——
 expectEqual(parseRsyncFlavor("openrsync: protocol version 29\nrsync version 2.6.9 compatible"),
@@ -1078,8 +1177,11 @@ expectEqual(directorySizeBytes(tailDir + "/no-such-dir"), 0, "directorySizeBytes
 try? FileManager.default.removeItem(atPath: tailDir)
 
 // ============================================================
-// 0.5.2 界面精简（TDD 红灯）：递归是固有行为，不再是可关的开关
+// 27. 5.2 界面精简（TDD 红灯）：递归是固有行为，不再是可关的开关
 // ============================================================
+print("")
+print("")
+section("29. 5.2 界面精简（TDD 红灯）：递归是固有行为，不再是可关的开关")
 // 关掉「保留属性」也必须递归：以前 -a 顺带含 -r，取消「递归」复选框就悄悄失效
 expectTrue(cmd("/Users/me/a", "u@h:/b", preserveAttrs: false, resume: false).contains("rsync -r "),
            "固定递归: rsync 在 preserveAttrs=false 时仍带 -r")
@@ -1113,6 +1215,8 @@ expectTrue(!needsParseReminder(conn: "jykj@192.0.2.9", user: "", host: "192.0.2.
 // 旧写法 `cd … && clear && exec omp` 用 exec 顶替了 shell，omp 一退出窗口里
 // 只剩一个已结束、不能再输入的会话。目标：omp 退出后回到该目录的交互式 shell。
 // ============================================================
+print("")
+section("30. 启动工具收尾：退出 CLI 后终端仍可用（0.5.3）")
 let toolLine = buildToolLaunchLine(dir: "/Users/me/my project", cmd: "omp")
 expectTrue(toolLine.contains("cd '/Users/me/my project'"), "启动工具: cd 到配置目录且正确加引号")
 expectTrue(toolLine.contains("clear"), "启动工具: 保留清屏")
@@ -1140,6 +1244,8 @@ expectTrue(zshSyntaxOK(toolScript), "启动工具脚本: zsh -n 语法通过")
 // 照样弹「浏览远端目录」输入框并真的发起 ssh，最后弹一个「远端浏览失败」报错。
 // 另外 splitRemotePath 只拆第一个冒号，host:2200:/data 会丢端口、起始路径变成 "2200:/data"。
 // ============================================================
+print("")
+section("31. 浏览远端前置校验（0.5.4）")
 func plan(_ field: String, _ user: String = "", _ host: String = "", _ port: String = "",
           others: [String] = [], known: [String] = []) -> BrowseHostPlan {
     browseHostPlan(fieldText: field, credUser: user, credHost: host, credPort: port,
@@ -1174,8 +1280,11 @@ expectTrue(!pNone.error.isEmpty && pNone.error.contains("解析"), "浏览远端
 expectEqual(plan("192.168.198.101:2200:/data").startPath, "/data", "浏览远端: 无用户名带端口也正确")
 
 // ============================================================
-// 21. 密码只提示、绝不落明文（0.5.4）
+// 28. 密码只提示、绝不落明文（0.5.4）
 // ============================================================
+print("")
+print("")
+section("32. 密码只提示、绝不落明文（0.5.4）")
 expectEqual(passwordNotice(pc("jykj@192.168.198.101")), "", "密码提示: 无密码不加话")
 let passInfo = pc("jykj:S3cret@p!@192.168.198.101")
 let passTip = passwordNotice(passInfo)
@@ -1187,6 +1296,8 @@ expectTrue(!buildHostSpec(passInfo).contains("S3cret"), "密码提示: hostSpec 
 // 22. 高级选项折叠后的默认摘要（0.5.4）
 // 控件隐藏不等于失去作用：折叠按钮的 tooltip 必须能说出当前默认值，值仍由 makeCopyParams 读取。
 // ============================================================
+print("")
+section("33. 高级选项折叠后的默认摘要（0.5.4）")
 let advDefault = advancedSummary(preserve: true, resume: true, bwlimit: "")
 expectTrue(advDefault.contains("保留属性") && advDefault.contains("断点续传"), "高级选项摘要: 两项默认开启可见")
 expectTrue(advDefault.contains("不限速"), "高级选项摘要: 默认不限速可见")
@@ -1199,6 +1310,8 @@ expectTrue(advChanged.contains("3.5") && advChanged != advDefault, "高级选项
 // open 的退出码是 0、NSWorkspace 的 completion error 也是 nil（0.4.9 实测）。
 // 所以唯一可信的证据只能是脚本自己写下的标记文件；判定与兜底文案都做成纯函数，先红后绿。
 // ============================================================
+print("")
+section("34. 启动之后「脚本到底有没有在终端里跑起来」（0.5.5）")
 expectEqual(startMarkerPath(for: "/tmp/a.command"), "/tmp/a.command.started",
             "启动标记: 落在脚本旁边，随脚本一起过期")
 expectEqual(launchStartVerdict(hasMarker: true, waitedSeconds: 0), LaunchStart.started,
@@ -1235,6 +1348,8 @@ expectTrue(!blockedNotice.contains("已交给 Terminal"), "兜底文案: 不再�
 // 谁先调用谁覆盖 —— 0.5.0 的假绿和 0.5.5「自测读到上一份脚本」都出在这里。
 // 现在改成 launchCommandInTerminal 返回 LaunchReport，调用方拿值，不再有共享状态。
 // ============================================================
+print("")
+section("35. 技术债清理（0.5.6）：启动结果用值类型传，不再靠全局变量")
 let okReport = LaunchReport.submitted(scriptPath: "/tmp/x/ai-launcher-A.command")
 expectTrue(okReport.openSubmitted, "启动报告: 提交成功标记为 true")
 expectEqual(okReport.markerPath, startMarkerPath(for: "/tmp/x/ai-launcher-A.command"),
@@ -1265,9 +1380,70 @@ expectTrue(zshSyntaxOK(buildCopyScriptLine(banner: "带'引号", prefix: "echo '
            "拷贝脚本正文: 横幅含单引号也不破坏 zsh 语法（统一走 shellQuote）")
 
 // ============================================================
+// 25. 示例配置与代码默认值不得漂移（0.5.7）
+// 背景：config.example.json 写着 opencode + omp 两个工具，defaultConfigJSON() 只有 opencode。
+// 文档说一套、首启写另一套：新用户照着示例改，就和程序自己写出的文件对不上。
+// 这条断言读的是仓库里真实的示例文件，test.sh 在 CI 里跑，漂移会直接红。
+// ============================================================
+print("")
+section("36. 示例配置与代码默认值不得漂移（0.5.7）")
+let repoRoot = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent().deletingLastPathComponent()
+let examplePath = repoRoot.appendingPathComponent("config.example.json").path
+expectTrue(FileManager.default.fileExists(atPath: examplePath), "示例配置: config.example.json 存在")
+let exampleData = FileManager.default.contents(atPath: examplePath) ?? Data()
+let exampleObj = (try? JSONSerialization.jsonObject(with: exampleData)) as? [String: Any] ?? [:]
+let defaultObj = defaultConfigJSON()
+expectEqual(Set(exampleObj.keys), Set(defaultObj.keys), "示例配置: 顶层 key 与代码默认值一致")
+func toolLines(_ obj: [String: Any]) -> [String] {
+    (obj["tools"] as? [[String: String]] ?? []).map { "\($0["name"] ?? "")|\($0["cmd"] ?? "")" }
+}
+expectEqual(toolLines(exampleObj), toolLines(defaultObj),
+            "示例配置: 工具清单与默认值一致（文档与首启写出的文件不能两套）")
+expectEqual(exampleObj["pathPrepend"] as? [String] ?? [], defaultObj["pathPrepend"] as? [String] ?? [],
+            "示例配置: pathPrepend 与默认值一致")
+expectEqual(exampleObj["dirs"] as? [String] ?? [], defaultObj["dirs"] as? [String] ?? [],
+            "示例配置: dirs 与默认值一致")
+
+// ============================================================
+// 26. 调试日志按大小轮转（0.5.7）
+// debugLog 以前只追加、不轮转，路径写死 /tmp，跑久了没人清，单文件能长到几百 MB。
+// 判定做成纯函数，另有一条真写文件的用例（小上限 → 旧内容进 .1）。
+// ============================================================
+print("")
+section("37. 调试日志按大小轮转（0.5.7）")
+expectEqual(debugLogDecision(size: 0, limit: 1024), .append, "日志轮转: 空文件直接追加")
+expectEqual(debugLogDecision(size: 1023, limit: 1024), .append, "日志轮转: 未到上限仍追加")
+expectEqual(debugLogDecision(size: 1024, limit: 1024), .rotate, "日志轮转: 到达上限就换新文件")
+expectEqual(debugLogDecision(size: 9_999_999, limit: 1024), .rotate, "日志轮转: 超限换新文件")
+expectEqual(rotatedLogPath("/tmp/ai-launcher-debug.log"), "/tmp/ai-launcher-debug.log.1",
+            "日志轮转: 旧文件落到 .1")
+let tmpLog = (NSTemporaryDirectory() as NSString)
+    .appendingPathComponent("aial-logtest-\(UUID().uuidString).log")
+try? "0123456789".write(toFile: tmpLog, atomically: true, encoding: .utf8)
+debugLog("only-this-line", path: tmpLog, sizeLimit: 8)
+let rotated = (try? String(contentsOfFile: rotatedLogPath(tmpLog), encoding: .utf8)) ?? ""
+let currentLog = (try? String(contentsOfFile: tmpLog, encoding: .utf8)) ?? ""
+expectTrue(rotated.contains("0123456789"), "日志轮转: 旧内容完整保留进 .1")
+expectTrue(currentLog.contains("only-this-line") && !currentLog.contains("0123456789"),
+           "日志轮转: 新文件只含轮转之后的内容")
+try? FileManager.default.removeItem(atPath: tmpLog)
+try? FileManager.default.removeItem(atPath: rotatedLogPath(tmpLog))
+
+// ============================================================
 // 汇总
 // ============================================================
+// 先结算最后一组，再按组打印分数：红一条能直接看出属于哪一组，
+// 不用在 1400 行输出里往上翻。带失败的分组单独标出来。
+section("(汇总)")
 print("\n======== 测试汇总：\(passCount) 通过，\(failures.count) 失败 ========")
+let failedSections = sectionStats.filter { $0.failed > 0 }
+if !failedSections.isEmpty {
+    print("失败分组：")
+    for s in failedSections {
+        print("  ✗ \(s.name)  \(s.passed) 通过 / \(s.failed) 失败")
+    }
+}
 if !failures.isEmpty {
     print("失败用例：")
     for f in failures { print("  - \(f)") }

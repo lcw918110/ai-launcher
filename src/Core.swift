@@ -1047,7 +1047,9 @@ func encodeJSON(_ obj: Any) -> Data? {
 }
 
 func defaultConfigJSON() -> [String: Any] {
-    // 缺省配置用占位路径（不携带任何本机/内网信息），首次启动写出后由用户自行修改
+    // 缺省配置用占位路径（不携带任何本机/内网信息），首次启动写出后由用户自行修改。
+    // 注意：config.example.json 必须与这里逐字一致（tests 里有断言比对真实文件），
+    // 改这里就顺手跑 scripts/sync-config-example.sh，别让文档和首启写出的两套。
     return [
         "dirs": [
             "/path/to/project-a",
@@ -1055,6 +1057,7 @@ func defaultConfigJSON() -> [String: Any] {
         ],
         "tools": [
             ["name": "opencode", "cmd": "opencode"],
+            ["name": "omp（Oh My Pi）", "cmd": "omp"],
         ],
         "pathPrepend": defaultPathPrepend,
         "copy": [
@@ -1219,15 +1222,37 @@ func dirLabel(_ path: String) -> String {
     (path as NSString).lastPathComponent
 }
 
-func debugLog(_ msg: String) {
+// —— 调试日志（按大小轮转）——
+// 以前只追加不轮转，跑久了单个文件能长到几百 MB，还得人工去清。
+// 判定与命名都做成纯函数：上限比较和「.1」后缀是策略，能测；真正写盘只有一处。
+let debugLogPath = "/tmp/ai-launcher-debug.log"
+let debugLogSizeLimit = 2 * 1024 * 1024   // 2 MB：够复盘几次操作，又不会无限长
+
+enum DebugLogDecision: Equatable { case append, rotate }
+
+func debugLogDecision(size: Int, limit: Int) -> DebugLogDecision {
+    size >= limit ? .rotate : .append
+}
+
+func rotatedLogPath(_ path: String) -> String { path + ".1" }
+
+func debugLog(_ msg: String, path: String = debugLogPath, sizeLimit: Int = debugLogSizeLimit) {
     let line = "\(Date()) \(msg)\n"
-    let path = "/tmp/ai-launcher-debug.log"
+    let manager = FileManager.default
+    let attrs = try? manager.attributesOfItem(atPath: path)
+    let size = (attrs?[.size] as? Int) ?? 0
+    if debugLogDecision(size: size, limit: sizeLimit) == .rotate {
+        let old = rotatedLogPath(path)
+        try? manager.removeItem(atPath: old)
+        try? manager.moveItem(atPath: path, toPath: old)
+    }
+    guard let data = line.data(using: .utf8) else { return }
     if let h = FileHandle(forWritingAtPath: path) {
         h.seekToEndOfFile()
-        h.write(line.data(using: .utf8)!)
+        h.write(data)
         h.closeFile()
     } else {
-        try? line.data(using: .utf8)!.write(to: URL(fileURLWithPath: path))
+        try? data.write(to: URL(fileURLWithPath: path))
     }
 }
 

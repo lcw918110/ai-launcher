@@ -3,6 +3,18 @@
 版本号遵循「主版本.次版本.修订号」，1.0 之前每次成批改动升次版本号。安装包版本以 `src/Info.plist` 的
 `CFBundleShortVersionString` 为准，构建脚本原样拷入 `.app`。
 
+## 0.5.7 — 2026-11-12
+
+技术债第二轮：清掉「文档说一套、程序做另一套」和几处「每次都多花一份力气」的地方。**不改界面行为**，仍按 TDD 先红灯后绿灯。
+
+- **示例配置不再是第二份手写文件**：`config.example.json` 与 `defaultConfigJSON()` 已经漂移 —— 示例写着 `opencode` + `omp` 两个工具，首次启动实际只写出 `opencode`。新用户照示例改，就和程序自己写出的文件对不上。现在：①默认值补上 `omp`；②新增 `scripts/sync-config-example.sh`，示例由代码生成（`--check` 只比对不写盘）；③`tests/main.swift` **直接读仓库里真实的 `config.example.json`**，断言顶层 key / 工具清单 / `pathPrepend` / `dirs` 与默认值一致；`test.sh` 与 CI 各跑一次 `--check`。两道口子互相兜底：忘了跑生成器，测试红；生成器和代码同时改错，`--check` 红。
+- **`debugLog` 按大小轮转**：以前只追加、不轮转，路径写死 `/tmp/ai-launcher-debug.log`，跑久了单文件能到几百 MB 还得人工清。现在按 2 MB 轮转，旧内容落到 `.1`；判定 `debugLogDecision(size:limit:)` 与命名 `rotatedLogPath` 是纯函数，另有一条真写文件的用例（小上限 → 旧内容完整进 `.1`，新文件只含轮转之后的内容）。
+- **CI 不再跑两遍接线门禁**：`test.sh` 末尾跑一次、CI 又单独跑一次。新增 `test.sh --core-only`（只跑断言），CI 用它；接线仍保留独立 step，让「新增控件忘了接线」在日志里一眼可见。
+- **测试加分组**：`tests/main.swift` 1400 行顺序跑，红一条要往上翻几百行才知道是哪组，段号还重过（两个 17、两个 18）。加 `section()` 只做记账、**不改任何断言**，整理成 37 组连续编号；失败项带 `[组名]` 前缀，汇总先列「失败分组」再列用例。实测把 `deriveDirection` 一条故意改错，输出直接是 `✗ 7. deriveDirection  5 通过 / 1 失败`。
+- **有意不做**：把中文文案抽成 Core 常量。`tests/main.swift` 有 13 处 `contains("…")` 匹配用户文案（如「不是有效的远端地址」），抽成常量后测试变成「引用常量断言常量」，就失去「用户真能看到这句话」的意义。保留现状，改文案时同步改断言（G-35 记了这条）。
+- **验证**：红灯 —— `debugLogDecision` / `rotatedLogPath` 不存在、`debugLog(_:path:sizeLimit:)` 参数不匹配（编译失败）。绿灯 —— Core **465 条**全绿（453 → 465）；GUI 自测 6 组全 PASS 无 FAIL；`test.sh` / `check-ui-wiring.sh`（5 项）/ `check-docs.sh` / `sync-config-example.sh --check` 全过。
+- **文档**：docs/05（断言数与新增三组）、docs/06（G-31~G-35）、README、docs/08、CHANGELOG、Info.plist（0.5.7 / build 21）同步。
+
 ## 0.5.6 — 2026-11-12
 
 清一轮技术债：把「时序一变就串味」的全局状态、含糊的字符串方向、四遍手拼的横幅都收掉。**不改界面行为**，仍按 TDD 先红灯后绿灯。
