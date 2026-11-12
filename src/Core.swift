@@ -247,10 +247,11 @@ func splitRemotePath(_ p: String) -> (host: String, path: String)? {
     return (host, path)
 }
 
-// 「解析」把 host 补进哪个路径框
-// 有「最近聚焦过」的记录就尊重它；没有时只看框里有没有内容这个事实。
-// 不能把回填押在 textDidBeginEditing 一定发出上：窗口不是 key（--selftest 环境）时一次都不发；
-// 真人也可能压根没点过路径框（路径是 last-copy.json 回填的）。这两种情况下都必须填点东西。
+// 「解析」把 host 补进哪个路径框：**焦点在哪个框就补哪个框**（用户 0.5.4 明确要求）。
+// 只有完全没有焦点记录时才兜底；兜底只补「空的那个框」，绝不改写用户已经写好的路径——
+// 旧规则「目标空就填源」会把用户填好的本地源路径改成远端，目标反而空着，人工测试直接发现。
+// 也不能要求用户一定点过路径框：窗口不是 key 时 textDidBeginEditing 一次都不发，
+// 路径由 last-copy.json 回填时真人同样没点过框（0.5.1 的教训）。
 enum ParseTargetField: String {
     case none, source, target
 }
@@ -258,10 +259,11 @@ enum ParseTargetField: String {
 func resolveParseTarget(lastFocused: ParseTargetField,
                         source: String, target: String) -> ParseTargetField {
     if lastFocused != .none { return lastFocused }
+    let s = source.trimmingCharacters(in: .whitespacesAndNewlines)
     let t = target.trimmingCharacters(in: .whitespacesAndNewlines)
-    // 目标空 → 填源（源是必填起点，也是「只有一个框有内容」时的自然归属）
-    // 目标有内容 → 填目标（push 常见；两框都有内容且无焦点时的一条确定规则，状态栏会写明可改）
-    return t.isEmpty ? .source : .target
+    if !s.isEmpty && t.isEmpty { return .target }   // 源已填 → 远端是目标
+    if s.isEmpty && !t.isEmpty { return .source }   // 目标已填 → 远端是源
+    return .target                                   // 两框都空（本地推远端）或都有内容：固定规则，状态栏写明怎么改
 }
 
 // 把解析出的 user@host[:port] 补进路径框的值（「解析」按钮回填路径用）
@@ -335,6 +337,86 @@ func sshListDir(hostSpec: String, path: String) -> (ok: Bool, output: String, er
     let errStr = String(data: errData, encoding: .utf8) ?? ""
     let ok = p.terminationStatus == 0
     return (ok, outStr, errStr)
+}
+
+// —— 「浏览远端」的前置校验（纯函数，先拦脏输入再碰 NSAlert / ssh）——
+// 旧实现只判断路径里有没有冒号：ssh://bad 被拆成 host="ssh"、乱码:xxx 被拆成 host="乱码"，
+// 照样弹「浏览远端目录」输入框并真的发起 ssh，最后给用户一个看不懂的「远端浏览失败」。
+// 另外 splitRemotePath 只拆第一个冒号，host:2200:/data 会丢端口、起始路径变成 "2200:/data"。
+struct BrowseHostPlan {
+    let hostSpec: String     // 要 ssh 的 user@host[:port]；被拦下时为空
+    let startPath: String    // 远端起始路径（空路径默认 ~）
+    let error: String        // 非空 = 拦下，不弹窗、不发起 ssh
+    let note: String         // 非空 = 状态栏附带说明主机来自哪里
+}
+
+// 无点的 ssh 别名只有在 ~/.ssh/config 里出现过才认，否则 "notahost" 也会被拿去连。
+// IP / 域名 / 方括号 IPv6 直接放行；主机部分只允许 ASCII 主机名字符集。
+func validBrowseHost(_ host: String, knownHosts: [String]) -> Bool {
+    if host.isEmpty { return false }
+    let allowed = CharacterSet(charactersIn:
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._@[]:-")
+    if host.unicodeScalars.contains(where: { !allowed.contains($0) }) { return false }
+    var hostOnly = host
+    if let at = hostOnly.lastIndex(of: "@") {
+        hostOnly = String(hostOnly[hostOnly.index(after: at)...])
+    }
+    if hostOnly.hasPrefix("[") && hostOnly.hasSuffix("]") { return true }
+    if looksLikeHost(hostOnly) { return true }
+    return knownHosts.contains(hostOnly) || knownHosts.contains(host)
+}
+
+func browseHostPlan(fieldText: String,
+                    credUser: String, credHost: String, credPort: String,
+                    otherPaths: [String],
+                    knownHosts: [String]) -> BrowseHostPlan {
+    let field = fieldText.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !field.isEmpty {
+        let bad = "路径框里的「\(field)」不是有效的远端地址：清空它，或先粘贴连接串点「解析」"
+        if field.contains("://") || field.hasPrefix("/") || !isRemotePath(field) {
+            return BrowseHostPlan(hostSpec: "", startPath: "", error: bad, note: "")
+        }
+        guard let sp = splitRemoteSpec(field), validBrowseHost(sp.host, knownHosts: knownHosts) else {
+            return BrowseHostPlan(hostSpec: "", startPath: "",
+                                  error: "路径框里的「\(field)」不是有效的远端地址：主机不在 ~/.ssh/config 里，或格式不对",
+                                  note: "")
+        }
+        // splitRemoteSpec 把端口单独拆出来，这里拼回 hostSpec，浏览时端口不再丢
+        let spec = sp.host + (sp.port.isEmpty ? "" : ":" + sp.port)
+        return BrowseHostPlan(hostSpec: spec, startPath: sp.path.isEmpty ? "~" : sp.path,
+                              error: "", note: "")
+    }
+    // 路径框为空：按「解析结果」的主机浏览（含端口），状态栏说明来源
+    if !credHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let spec = buildHostSpec(ConnectionInfo(user: credUser, password: "",
+                                                host: credHost, port: credPort))
+        return BrowseHostPlan(hostSpec: spec, startPath: "~", error: "",
+                              note: "路径框为空，已按「解析结果」的主机浏览")
+    }
+    // 兼容：另一个路径框里写了合法远端地址
+    for p in otherPaths {
+        let v = p.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isRemotePath(v), let sp = splitRemoteSpec(v), validBrowseHost(sp.host, knownHosts: knownHosts) {
+            let spec = sp.host + (sp.port.isEmpty ? "" : ":" + sp.port)
+            return BrowseHostPlan(hostSpec: spec, startPath: "~", error: "",
+                                  note: "已按另一个路径框里的主机浏览")
+        }
+    }
+    return BrowseHostPlan(hostSpec: "", startPath: "",
+                          error: "浏览远端前请先粘贴连接串并点「解析」", note: "")
+}
+
+// 连接串里的密码：解析出来只用来判断「有没有」，不回填、不进命令、不落盘。
+// 但状态栏必须一次说全，否则用户会以为解析把密码弄丢了。
+func passwordNotice(_ info: ConnectionInfo) -> String {
+    info.password.isEmpty ? "" : "；连接串里的密码不保存，请在 Terminal 按 ssh 提示输入"
+}
+
+// 高级选项折叠后，按钮 tooltip 要能说出当前默认值（隐藏 ≠ 没接线）。
+func advancedSummary(preserve: Bool, resume: Bool, bwlimit: String) -> String {
+    let b = bwlimit.trimmingCharacters(in: .whitespacesAndNewlines)
+    return "保留属性 \(preserve ? "✓" : "✗") · 断点续传 \(resume ? "✓" : "✗") · " +
+           (b.isEmpty ? "不限速" : "限速 \(b) MB/s")
 }
 
 // —— 本机 rsync 到底能做到什么 ——

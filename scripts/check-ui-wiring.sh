@@ -89,6 +89,33 @@ def launch_recovery_errors(files):
     return errs
 
 
+def browse_guard_errors(files):
+    """浏览远端前置校验（0.5.4）：脏输入必须在 NSAlert / ssh 之前由 Core 纯函数拦下。
+    旧写法 currentHostSpec + splitRemotePath 会把 ssh://bad 拆成 host="ssh"、
+    把乱码当主机，还会丢掉 host:2200:/data 的端口。"""
+    form = "\n".join(files.get("CopyForm.swift", []))
+    core = "\n".join(files.get("Core.swift", []))
+    errs = []
+    if "browseHostPlan(fieldText:" not in form:
+        errs.append("CopyForm.browseRemote 没有走 Core 的 browseHostPlan 前置校验")
+    if "currentHostSpec(" in form or "splitRemotePath(cur)" in form:
+        errs.append("浏览远端又绕回 splitRemotePath / currentHostSpec")
+    if "func browseHostPlan" not in core:
+        errs.append("Core 缺少 browseHostPlan 纯函数")
+    return errs
+
+
+def advanced_fold_errors(files):
+    """高级选项默认收起但值仍接线（0.5.4）：不能把控件删掉，也不能收起后没有摘要。"""
+    form = "\n".join(files.get("CopyForm.swift", []))
+    errs = []
+    if "optRow.isHidden = true" not in form or "func toggleAdvancedOptions" not in form:
+        errs.append("高级选项没有默认收起 / 没有展开动作")
+    if form.count("advancedSummary(") < 2:
+        errs.append("折叠按钮 tooltip 没有用 advancedSummary 读三个控件当前值")
+    return errs
+
+
 # 自检：喂一份「旧 exec 写法」的假代码，检查器必须报错。
 # 否则检查器本身就成了新的假绿（0.5.0 的教训）。
 fake = {
@@ -130,6 +157,31 @@ if not launch_recovery_errors(fake_missing_il):
     print("检查器自检失败：缺交互 shell 的收尾未被识别（检查逻辑失效）")
     sys.exit(1)
 
+fake_browse_bypass = {
+    "CopyForm.swift": [
+        "func browseRemote(into field: NSTextField) {",
+        "    let hostSpec = currentHostSpec(preferredField: field)",
+        "    let sp = splitRemotePath(cur)",
+        "}",
+    ],
+    "Core.swift": [],
+}
+if not browse_guard_errors(fake_browse_bypass):
+    print("检查器自检失败：绕过浏览远端前置校验未被识别")
+    sys.exit(1)
+
+fake_no_fold = {
+    "CopyForm.swift": [
+        "func toggleAdvancedOptions(_ sender: NSButton) {}",
+        "optRow.isHidden = false",
+        "advancedSummary(preserve: true, resume: true, bwlimit: \"\")",
+    ],
+    "Core.swift": [],
+}
+if not advanced_fold_errors(fake_no_fold):
+    print("检查器自检失败：高级选项没有默认收起未被识别")
+    sys.exit(1)
+
 root = pathlib.Path(sys.argv[1])
 files = {p.name: p.read_text(encoding="utf-8").splitlines()
          for p in sorted((root / "src").glob("*.swift"))}
@@ -149,5 +201,19 @@ print("启动脚本收尾检查：" + ("通过（CLI 退出后回到可用 shell
 for e in recovery_errs:
     print(f"  ✗ {e}")
 if recovery_errs:
+    sys.exit(1)
+
+browse_errs = browse_guard_errors(files)
+print("浏览远端前置校验：" + ("通过（脏输入在弹窗前拦下、端口保留）" if not browse_errs else "失败"))
+for e in browse_errs:
+    print(f"  ✗ {e}")
+if browse_errs:
+    sys.exit(1)
+
+fold_errs = advanced_fold_errors(files)
+print("高级选项折叠：" + ("通过（默认收起且值仍接线）" if not fold_errs else "失败"))
+for e in fold_errs:
+    print(f"  ✗ {e}")
+if fold_errs:
     sys.exit(1)
 PY

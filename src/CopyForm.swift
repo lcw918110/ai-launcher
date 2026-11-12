@@ -147,6 +147,24 @@ extension AppDelegate {
         optRow.addView(limitLabel, in: .leading)
         optRow.addView(copyBwlimitField, in: .leading)
         optRow.addView(limitUnit, in: .leading)
+
+        // 高级选项默认收起：三个值仍按默认选中并始终被 makeCopyParams 读取（隐藏 ≠ 没接线）。
+        // 折叠按钮的 tooltip 用 advancedSummary 说出当前默认值，收起时也能看见生效状态。
+        optRow.isHidden = true
+        let toggleRow = NSStackView()
+        toggleRow.orientation = .horizontal
+        toggleRow.spacing = 8
+        let advancedToggle = NSButton(title: "高级选项 ▸", target: self,
+                                      action: #selector(toggleAdvancedOptions(_:)))
+        advancedToggle.bezelStyle = .rounded
+        advancedToggle.controlSize = .small
+        advancedToggle.toolTip = advancedSummary(preserve: true, resume: true, bwlimit: "")
+        let advancedHint = NSTextField(labelWithString: "默认已开启，点开可改")
+        advancedHint.font = NSFont.systemFont(ofSize: 11)
+        advancedHint.textColor = .secondaryLabelColor
+        toggleRow.addView(advancedToggle, in: .leading)
+        toggleRow.addView(advancedHint, in: .leading)
+        stack.addView(toggleRow, in: .leading)
         stack.addView(optRow, in: .leading)
 
         // 开始按钮 + 状态
@@ -166,6 +184,18 @@ extension AppDelegate {
         stack.addView(actionRow, in: .leading)
     }
 
+
+    // 展开 / 收起高级选项。控件始终存在、默认值始终生效，只是不占主界面。
+    @objc func toggleAdvancedOptions(_ sender: NSButton) {
+        let row = copyPreserveCheck.superview as? NSStackView
+        let expanding = row?.isHidden ?? false
+        row?.isHidden = !expanding
+        sender.title = expanding ? "高级选项 ▾" : "高级选项 ▸"
+        // tooltip 读的是三个控件当前的值，收起后仍能看见「默认选中了什么」
+        sender.toolTip = advancedSummary(preserve: copyPreserveCheck.state == .on,
+                                         resume: copyResumeCheck.state == .on,
+                                         bwlimit: copyBwlimitField.stringValue)
+    }
 
     // 选中免密机器后，按触发框类型智能填回，并联动填 IP/主机、用户名
     // （TriggerField / FillPlan / buildFillPlan 已迁至 src/Core.swift 纯函数）
@@ -345,8 +375,16 @@ extension AppDelegate {
         // 日志脱敏：不落原始连接串与明文密码
         debugLog("[互拷] 连接串解析成功: user=\(info.user) host=\(info.host) port=\(info.port) pass=\(maskSecret(info.password))")
 
+        // 焦点在哪个路径框，解析结果就补到哪个框。先看当场真正持有键盘的框，
+        // 再看「最近聚焦过」的记录（点按钮时焦点通常已在连接串框，这条是主路径）。
+        // 刻意不抢焦点：程序若把光标挪到被填的框，下一次解析就会按程序挑的框走，
+        // 反而违背「焦点在哪补哪」。
         let focused: ParseTargetField
-        if let f = lastPathField {
+        if let editor = window?.firstResponder as? NSTextView,
+           let f = editor.delegate as? NSTextField,
+           f === copySourceField || f === copyTargetField {
+            focused = f === copySourceField ? .source : .target
+        } else if let f = lastPathField {
             focused = f === copySourceField ? .source : .target
         } else {
             focused = .none
@@ -357,16 +395,12 @@ extension AppDelegate {
         let field: NSTextField = decision == .target ? copyTargetField : copySourceField
         let filled = applyHostToPath(field.stringValue, hostSpec: spec)
         field.stringValue = filled
-        // 光标落回该框末尾：末尾正是接着写路径的位置
-        window?.makeFirstResponder(field)
-        if let editor = field.currentEditor() {
-            editor.selectedRange = NSRange(location: (filled as NSString).length, length: 0)
-        }
         let name = decision == .target ? "目标路径" : "源路径"
-        // 没点过框时是程序按规则选的，得说清楚填了哪个、怎么改（点另一个框再解析即可，替换是幂等的）
-        let hint = focused == .none ? "（要填另一个框，点它一下再解析）" : ""
-        copyStatusLabel.stringValue = "\(parsed)，已填入\(name)：\(filled)\(hint)"
-        debugLog("[互拷] 连接串解析并回填\(name): \(filled) 决策=\(decision.rawValue) 焦点记录=\(focused.rawValue)")
+        // 没检测到焦点时是程序按「只补空框」选的，得说清楚填了哪个、怎么改用焦点指定。
+        // 密码也在这里一次说全：它从不进命令行/脚本/磁盘，只在 Terminal 里按 ssh 提示输入。
+        let hint = focused == .none ? "（焦点在哪就补哪：点一下路径框再解析）" : ""
+        copyStatusLabel.stringValue = "\(parsed)，已填入\(name)：\(filled)\(hint)\(passwordNotice(info))"
+        debugLog("[互拷] 连接串解析并回填\(name): \(filled) 决策=\(decision.rawValue) 焦点记录=\(focused.rawValue) 含密码=\(!info.password.isEmpty)")
     }
 
     @objc func pickSource(_ sender: Any) {
@@ -395,34 +429,8 @@ extension AppDelegate {
         return nil
     }
 
-    // 从当前连接信息或路径中解析出 hostSpec（user@host[:port]）
-    // preferredField：优先从该字段提取 host（用于「浏览远端」时，浏览哪个框就用哪个框的 host）
-    func currentHostSpec(preferredField: NSTextField? = nil) -> String {
-        // 优先从 preferredField 提取 host（若有 user@host:path）
-        if let pf = preferredField {
-            let v = pf.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if isRemotePath(v), let sp = splitRemotePath(v) {
-                return sp.host
-            }
-        }
-        // 其次用全局凭据（IP/主机框 + 用户名 + 端口）
-        let connUser = copyUserField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let connHost = copyHostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let connPort = copyPortField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !connHost.isEmpty {
-            return buildHostSpec(ConnectionInfo(user: connUser, password: "", host: connHost, port: connPort))
-        }
-        // 最后从源/目标路径里提取 host（若有 user@host:path）
-        for field in [copySourceField, copyTargetField] {
-            let v = field?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if isRemotePath(v), let sp = splitRemotePath(v) {
-                return sp.host
-            }
-        }
-        return ""
-    }
-
     // 浏览远端目录：ssh ls 列目录，用户点选后回填
+    // 主机与起始路径的判定已抽成 Core 纯函数 browseHostPlan（可单测、可在弹窗前拦脏输入）。
     @objc func browseRemoteSource(_ sender: Any) {
         browseRemote(into: copySourceField)
     }
@@ -437,39 +445,44 @@ extension AppDelegate {
             copyStatusLabel.stringValue = "正在浏览远端，请稍候…"
             return
         }
-        // 优先从当前浏览的 field 提取 host（避免串到另一个路径框的 host）
-        let hostSpec = currentHostSpec(preferredField: field)
-        if hostSpec.isEmpty {
-            copyStatusLabel.stringValue = "浏览远端前请先解析连接串或填写 IP/主机"
+        // 前置校验：路径框里是 URL 片段 / 乱码 / 本地路径 / 未知别名时，
+        // 在弹输入框或发起 ssh 之前拦下并说清原因，别让用户点完「列出」才看到看不懂的报错。
+        let others = [copySourceField, copyTargetField]
+            .compactMap { $0 }.filter { $0 !== field }.map { $0.stringValue }
+        let known = sshHostsCache.flatMap { [$0.host, $0.display] }
+        let plan = browseHostPlan(fieldText: field.stringValue,
+                                  credUser: copyUserField.stringValue,
+                                  credHost: copyHostField.stringValue,
+                                  credPort: copyPortField.stringValue,
+                                  otherPaths: others,
+                                  knownHosts: known)
+        if !plan.error.isEmpty {
+            copyStatusLabel.stringValue = plan.error
+            debugLog("[互拷] 浏览远端被前置校验拦下: \(plan.error)")
             return
         }
-        // 初始路径：若字段已有 user@host:path，取 path；否则默认 ~
-        var initPath = "~"
-        let cur = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if isRemotePath(cur), let sp = splitRemotePath(cur), !sp.path.isEmpty {
-            initPath = sp.path
-        }
-        // 弹出输入框让用户填/确认起始远端路径
+        // 起始路径来自 splitRemoteSpec：host:2200:/data 的端口不再被当成路径的一部分
         let alert = NSAlert()
         alert.messageText = "浏览远端目录"
-        alert.informativeText = "输入远端起始路径，之后可逐层「进入下一层 / 上一级」"
+        alert.informativeText = "主机 \(plan.hostSpec)\n输入远端起始路径，之后可逐层「进入下一层 / 上一级」"
         alert.addButton(withTitle: "列出")
         alert.addButton(withTitle: "取消")
         let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        input.stringValue = initPath
+        input.stringValue = plan.startPath
         alert.accessoryView = input
         if alert.runModal() != .alertFirstButtonReturn {
             return
         }
         var path = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if path.isEmpty { path = "~" }
-        browseStep(hostSpec: hostSpec, path: path, into: field)
+        browseStep(hostSpec: plan.hostSpec, path: path, into: field, note: plan.note)
     }
 
     // 列「一层」：ssh 放后台线程执行（ConnectTimeout 最长 8 秒，同步跑主线程会卡死窗口）
-    private func browseStep(hostSpec: String, path: String, into field: NSTextField) {
+    private func browseStep(hostSpec: String, path: String, into field: NSTextField, note: String = "") {
         isBrowsingRemote = true
-        copyStatusLabel.stringValue = "正在列出远端目录…（\(hostSpec):\(path)）"
+        copyStatusLabel.stringValue = (note.isEmpty ? "" : note + "；") +
+            "正在列出远端目录…（\(hostSpec):\(path)）"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let r = sshListDir(hostSpec: hostSpec, path: path)
             DispatchQueue.main.async {

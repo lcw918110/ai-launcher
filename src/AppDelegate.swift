@@ -143,6 +143,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
 
     // —— 自测：模拟点击第一个启动按钮，验证完整链路 ——
     private func runSelfTest() {
+        // 按钮覆盖契约：所有自测里的真人点击都走这里记账，末尾会核对「每个互拷按钮都有用例」。
+        // 新增按钮却没补用例 → 自测红，逼着把明显 bug 挡在人工介入之前（0.5.4）。
+        var clickedTitles: Set<String> = []
+        func buttonKey(_ title: String) -> String {
+            title.hasPrefix("高级选项") ? "高级选项" : title
+        }
+        func click(_ b: NSButton?) {
+            guard let b = b else { return }
+            clickedTitles.insert(buttonKey(b.title))
+            b.performClick(nil)
+        }
         var buttons: [NSButton] = []
         if let stack = contentStack {
             for case let row as NSStackView in stack.views {
@@ -154,7 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         let didClickLaunch = buttons.first != nil && !CommandLine.arguments.contains("--no-launch")
         if let first = buttons.first, didClickLaunch {
             debugLog("[自测] 找到 \(buttons.count) 个启动按钮，模拟点击「\(first.title)」")
-            first.performClick(nil)
+            click(first)
         } else {
             debugLog("[自测] 找到 \(buttons.count) 个启动按钮（--no-launch：不点击、不弹 Terminal）")
         }
@@ -194,41 +205,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         }
         debugLog("[TDD] 找到「解析」按钮 = \(parseBtn != nil)")
 
-        // A：真人点过源路径框，再去连接串框粘贴，然后点「解析」
-        // 注：--selftest 里窗口不是 key，makeFirstResponder 不会发出 textDidBeginEditing；
-        // 这条同时覆盖「焦点记录漏发」时按内容兜底是否能填对框。
+        // A：真人点过源路径框，再去连接串框粘贴，然后点「解析」——焦点在源就填源
+        // --selftest 里窗口不是 key，makeFirstResponder 不发 textDidBeginEditing；
+        // post 系统通知补上真机会发的那一条，模拟的是真人聚焦而不是手设状态变量。
         resetParseFields()
         _ = window.makeFirstResponder(copySourceField)
+        NotificationCenter.default.post(name: NSControl.textDidBeginEditingNotification, object: copySourceField)
         copySourceField.stringValue = "/tmp/demo"
         _ = window.makeFirstResponder(copyConnField)
         copyConnField.stringValue = "jykj@192.0.2.9:2200"
-        parseBtn?.performClick(nil)
+        click(parseBtn)
         let tddA = copySourceField.stringValue == "jykj@192.0.2.9:2200:/tmp/demo"
-        debugLog("[TDD] A 点过源路径框 → \(tddA ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 状态=\(copyStatusLabel.stringValue)")
+        debugLog("[TDD] A 焦点在源路径框 → \(tddA ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 状态=\(copyStatusLabel.stringValue)")
 
-        // B：从没点过路径框，但源路径已被程序回填（last-copy.json）——真人最常遇到的情形
+        // B：从没点过路径框，但源路径已被程序回填（last-copy.json）——人工反馈「解析只给源路径」
+        // 的新契约：源是用户写好的本地路径，不许被改写；host 补到空的目标框。
         resetParseFields()
         copySourceField.stringValue = "/tmp/demo"
         copyConnField.stringValue = "jykj@192.0.2.9:2200"
-        parseBtn?.performClick(nil)
-        let tddB = copySourceField.stringValue == "jykj@192.0.2.9:2200:/tmp/demo"
-        debugLog("[TDD] B 路径是回填的、没点过框 → \(tddB ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 状态=\(copyStatusLabel.stringValue)")
+        click(parseBtn)
+        let tddB = copySourceField.stringValue == "/tmp/demo" &&
+                   copyTargetField.stringValue == "jykj@192.0.2.9:2200:"
+        debugLog("[TDD] B 源已填、没点过框 → \(tddB ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 目标=\(copyTargetField.stringValue)")
 
-        // C：两个路径框都空、从没点过 —— 解析后至少该给个可续写的起点
+        // C：两个路径框都空、从没点过 —— 默认按「本地推到远端」补目标，状态栏说明怎么换
         resetParseFields()
         copyConnField.stringValue = "jykj@192.0.2.9:2200"
-        parseBtn?.performClick(nil)
-        let tddC = copySourceField.stringValue == "jykj@192.0.2.9:2200:"
-        debugLog("[TDD] C 两框都空 → \(tddC ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 状态=\(copyStatusLabel.stringValue)")
+        click(parseBtn)
+        let tddC = copyTargetField.stringValue == "jykj@192.0.2.9:2200:" && copySourceField.stringValue.isEmpty
+        debugLog("[TDD] C 两框都空 → \(tddC ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 目标=\(copyTargetField.stringValue)")
 
-        // D：点过目标框，源框另有内容 —— 只填目标，不许串到源
+        // D：焦点在目标框，源框另有内容 —— 只填目标，不许串到源
         resetParseFields()
         copySourceField.stringValue = "/tmp/keep"
         _ = window.makeFirstResponder(copyTargetField)
+        NotificationCenter.default.post(name: NSControl.textDidBeginEditingNotification, object: copyTargetField)
         copyTargetField.stringValue = "/data/in"
         _ = window.makeFirstResponder(copyConnField)
         copyConnField.stringValue = "jykj@192.0.2.9"
-        parseBtn?.performClick(nil)
+        click(parseBtn)
         let tddD = copyTargetField.stringValue == "jykj@192.0.2.9:/data/in" && copySourceField.stringValue == "/tmp/keep"
         debugLog("[TDD] D 点过目标框 → \(tddD ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 目标=\(copyTargetField.stringValue)")
 
@@ -243,7 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         copySourceField.stringValue = "/tmp/keep"
         NotificationCenter.default.post(name: NSControl.textDidBeginEditingNotification, object: copyTargetField)
         copyConnField.stringValue = "jykj@192.0.2.9"
-        parseBtn?.performClick(nil)
+        click(parseBtn)
         let tddF = copyTargetField.stringValue == "jykj@192.0.2.9:" && copySourceField.stringValue == "/tmp/keep"
         debugLog("[TDD] F 焦点优先于内容 → \(tddF ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 目标=\(copyTargetField.stringValue)")
 
@@ -266,7 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         // 真人操作：粘连接串 → 点「解析」，凭据框应显示结果且不可手改（能改却不生效才是坑）
         resetParseFields()
         copyConnField.stringValue = "jykj@192.0.2.9:2200"
-        parseBtn?.performClick(nil)
+        click(parseBtn)
         let uiParsedReadOnly = copyHostField.stringValue == "192.0.2.9" && !copyHostField.isEditable
         debugLog("[WIRING] 解析后主机只读且有值 = \(uiParsedReadOnly ? "PASS" : "FAIL") 主机=\(copyHostField.stringValue) 可编辑=\(copyHostField.isEditable)")
         // 真人操作：粘连接串不点「解析」直接点「开始拷贝」——必须明确拦下，不能静默忽略。
@@ -277,11 +292,129 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         }
         resetParseFields()
         copyConnField.stringValue = "jykj@192.0.2.9:2200"
-        startBtn?.performClick(nil)
+        click(startBtn)
         let uiConnGuard = copyStatusLabel.stringValue.contains("连接串还没解析")
         debugLog("[WIRING] 未解析连接串被拦下 = \(uiConnGuard ? "PASS" : "FAIL") 状态=\(copyStatusLabel.stringValue)")
         let wiringPassed = [uiNoRecursive, uiNoPassword, uiCredsReadOnly, uiParsedReadOnly, uiConnGuard].filter { $0 }.count
         debugLog("[WIRING] 界面接线 \(wiringPassed)/5 PASS")
+        resetParseFields()
+
+        // —— 0.5.4 人工反馈四连（TDD 红灯）——
+        // 这些都属于「自己就该验出来」的明显 bug：解析焦点、密码去向、无效远端地址、折叠选项。
+        // 规矩不变：只走 firstResponder 切换 + 系统通知 + 按钮 performClick，不手设被测状态。
+        // G：焦点从源切到目标、连点两次「解析」，第二次必须落在目标框（不许残留上次焦点）
+        resetParseFields()
+        copySourceField.stringValue = "/tmp/keep"
+        NotificationCenter.default.post(name: NSControl.textDidBeginEditingNotification, object: copySourceField)
+        copyConnField.stringValue = "jykj@192.0.2.9"
+        click(parseBtn)
+        NotificationCenter.default.post(name: NSControl.textDidBeginEditingNotification, object: copyTargetField)
+        copyConnField.stringValue = "jykj@192.0.2.9"
+        click(parseBtn)
+        let tddG = copySourceField.stringValue == "jykj@192.0.2.9:/tmp/keep" &&
+                   copyTargetField.stringValue == "jykj@192.0.2.9:"
+        debugLog("[TDD] G 焦点切换后连点两次解析 → \(tddG ? "PASS" : "FAIL") 源=\(copySourceField.stringValue) 目标=\(copyTargetField.stringValue)")
+
+        // H：连接串里带密码 → 状态栏一次说全「不保存、在终端输」，且明文不落到任何回填控件
+        resetParseFields()
+        copyConnField.stringValue = "jykj:S3cret@192.0.2.9:2200"
+        click(parseBtn)
+        let leaked = [copySourceField.stringValue, copyTargetField.stringValue,
+                      copyUserField.stringValue, copyHostField.stringValue, copyPortField.stringValue]
+                     .contains(where: { $0.contains("S3cret") })
+        let tddH = copyStatusLabel.stringValue.contains("密码") &&
+                   !copyStatusLabel.stringValue.contains("S3cret") && !leaked
+        debugLog("[TDD] H 密码去向写明且不落明文 → \(tddH ? "PASS" : "FAIL") 状态=\(copyStatusLabel.stringValue)")
+
+        // K：源路径填无效信息 → 点「浏览远端」必须在弹窗 / 发起 ssh 之前拦下。
+        // 红灯阶段先用不会弹 NSAlert 的 "abc"（当前实现只提示「请先解析」，不是新文案）；
+        // 绿灯后会把 ssh:// 片段、非 ASCII、未知别名等脏输入一并纳入矩阵。
+        var browseBtn: NSButton?
+        for row in uiRows {
+            // 源路径行在前：取第一个「浏览远端」，下面的脏输入写在源路径框
+            for case let b as NSButton in row.views where b.title == "浏览远端" {
+                if browseBtn == nil { browseBtn = b }
+            }
+        }
+        resetParseFields()
+        copySourceField.stringValue = "abc"
+        click(browseBtn)
+        let tddK = copyStatusLabel.stringValue.contains("不是有效的远端地址") && !isBrowsingRemote
+        debugLog("[TDD] K 无效源路径点浏览远端被拦下 → \(tddK ? "PASS" : "FAIL") 状态=\(copyStatusLabel.stringValue)")
+
+        // L：脏输入矩阵。修复前这些会弹 NSAlert 卡住自测、甚至真的发起 ssh，
+        // 现在全部必须在弹窗之前被拦下。每条都是真人点击同一个按钮。
+        let dirtyCases: [(String, String)] = [
+            ("ssh://bad", "URL 片段"),
+            ("乱码:xxx", "非 ASCII 主机"),
+            ("notahost:/tmp", "未知别名"),
+            ("/Users/me/wrong", "本地路径误填"),
+        ]
+        var dirtyPassed = 0
+        for (input, label) in dirtyCases {
+            resetParseFields()
+            copySourceField.stringValue = input
+            click(browseBtn)
+            let ok = copyStatusLabel.stringValue.contains("不是有效的远端地址") && !isBrowsingRemote
+            if ok { dirtyPassed += 1 }
+            debugLog("[TDD] L 脏输入「\(label)」=\(input) → \(ok ? "PASS" : "FAIL") 状态=\(copyStatusLabel.stringValue)")
+        }
+        debugLog("[TDD] L 脏输入矩阵 \(dirtyPassed)/\(dirtyCases.count) PASS")
+
+        // Q：目标路径框旁边的「浏览远端」同样要有真人点击用例（两个按钮同 title，契约按 title 会漏）
+        var targetBrowseBtn: NSButton?
+        var browseSeen = 0
+        for row in uiRows {
+            for case let b as NSButton in row.views where b.title == "浏览远端" {
+                browseSeen += 1
+                if browseSeen == 2 { targetBrowseBtn = b }
+            }
+        }
+        resetParseFields()
+        copyTargetField.stringValue = "ssh://bad"
+        click(targetBrowseBtn)
+        let tddQ = copyStatusLabel.stringValue.contains("不是有效的远端地址") && !isBrowsingRemote
+        debugLog("[TDD] Q 目标框的浏览远端同样被拦下 → \(tddQ ? "PASS" : "FAIL") 状态=\(copyStatusLabel.stringValue)")
+
+        // M/N/O：高级选项默认折叠、点开可见、默认值仍在（隐藏 ≠ 没接线）
+        var advancedBtn: NSButton?
+        for row in uiRows {
+            for case let b as NSButton in row.views where b.title.hasPrefix("高级选项") { advancedBtn = b }
+        }
+        let optRow = copyPreserveCheck.superview as? NSStackView
+        let tddM = advancedBtn != nil && (optRow?.isHidden ?? false)
+        debugLog("[TDD] M 高级选项默认折叠 → \(tddM ? "PASS" : "FAIL") 按钮=\(advancedBtn?.title ?? "无") 隐藏=\(optRow?.isHidden ?? false)")
+        click(advancedBtn)
+        let tddN = (optRow?.isHidden ?? true) == false &&
+                   copyPreserveCheck.state == .on && copyResumeCheck.state == .on &&
+                   copyBwlimitField.stringValue.isEmpty &&
+                   (advancedBtn?.toolTip?.contains("保留属性") ?? false)
+        debugLog("[TDD] N 展开后默认选中且 tooltip 显示摘要 → \(tddN ? "PASS" : "FAIL") 隐藏=\(optRow?.isHidden ?? true) tooltip=\(advancedBtn?.toolTip ?? "无")")
+        click(advancedBtn)
+        let tddO = optRow?.isHidden ?? false
+        debugLog("[TDD] O 再点收起 → \(tddO ? "PASS" : "FAIL")")
+
+        // P：按钮覆盖契约 —— 互拷区每个非面板按钮都必须有一条真人点击用例。
+        // 以后新增按钮却没补用例，这里立刻红，不用等人工发现它点不动 / 点了报错。
+        var copySectionButtons: [NSButton] = []
+        var inCopySection = false
+        for v in contentStack?.views ?? [] {
+            if let label = v as? NSTextField, label.stringValue.contains("互拷") { inCopySection = true }
+            guard inCopySection, let row = v as? NSStackView else { continue }
+            // 只看「动作按钮」：复选框 target/action 为空，它们由控件接线检查与默认值断言覆盖
+            for case let b as NSButton in row.views where b.title != "选择…" && b.action != nil {
+                copySectionButtons.append(b)
+            }
+        }
+        let expectedButtons: Set<String> = ["解析", "浏览远端", "开始拷贝", "高级选项"]
+        let actualButtons = Set(copySectionButtons.map { buttonKey($0.title) })
+        let missingCases = expectedButtons.subtracting(clickedTitles)
+        let untestedButtons = actualButtons.subtracting(expectedButtons)
+        let tddP = missingCases.isEmpty && untestedButtons.isEmpty && !actualButtons.isEmpty
+        debugLog("[WIRING] 按钮覆盖契约 = \(tddP ? "PASS" : "FAIL") 界面按钮=\(actualButtons.sorted()) 已点用例=\(clickedTitles.sorted()) 缺用例=\(missingCases.sorted()) 未覆盖新按钮=\(untestedButtons.sorted())")
+        let dirtyOK = dirtyPassed == dirtyCases.count
+        let manualPassed = [tddG, tddH, tddK, dirtyOK, tddQ, tddM, tddN, tddO, tddP].filter { $0 }.count
+        debugLog("[TDD] 人工反馈四连 \(manualPassed)/9 PASS")
         resetParseFields()
 
         debugLog("[自测] 工具菜单（日志/暂存/配置）存在 = \(NSApp.mainMenu?.items.contains { $0.submenu?.title == "工具" } ?? false)")

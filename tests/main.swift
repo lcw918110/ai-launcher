@@ -189,22 +189,23 @@ expectEqual(applyHostToPath("old@h:/data", hostSpec: "jykj@192.0.2.9:2200"), "jy
 expectEqual(applyHostToPath("jykj@192.0.2.9:2200:/data", hostSpec: "jykj@192.0.2.9:2200"),
             "jykj@192.0.2.9:2200:/data", "applyHostToPath: 重复解析结果不变（幂等）")
 
-// 「解析」该把 host 补进哪个路径框：焦点优先，没有焦点记录时只看框里有没有内容
-// 回归人工测试：用户直接粘连接串点「解析」、或路径是程序回填的，都不该什么都不填
+// 「解析」该把 host 补进哪个路径框：**焦点在哪个框就补哪个框**。
+// 只有完全没有焦点记录时才按内容兜底，且兜底只补「空的那个框」，绝不改写用户已填好的路径
+// （人工反馈「解析只给源路径复制」：源已填本地路径却被改成远端，目标反而空着）。
 expectEqual(resolveParseTarget(lastFocused: .source, source: "", target: "/data"), .source,
-            "resolveParseTarget: 点过源框，即使它空着也填源")
+            "resolveParseTarget: 点过源框，即使目标有内容也填源")
 expectEqual(resolveParseTarget(lastFocused: .target, source: "/tmp/a", target: ""), .target,
             "resolveParseTarget: 点过目标框，即使源已有内容也不串框")
-expectEqual(resolveParseTarget(lastFocused: .none, source: "", target: ""), .source,
-            "resolveParseTarget: 都没内容、没点过框 → 填源给起点")
-expectEqual(resolveParseTarget(lastFocused: .none, source: "/tmp/a", target: ""), .source,
-            "resolveParseTarget: 只有源有内容 → 填源（路径是回填的常见情形）")
-expectEqual(resolveParseTarget(lastFocused: .none, source: "", target: "/data"), .target,
-            "resolveParseTarget: 只有目标有内容 → 填目标")
+expectEqual(resolveParseTarget(lastFocused: .none, source: "", target: ""), .target,
+            "resolveParseTarget: 两框都空 → 补目标（本地推远端），状态栏说明怎么换")
+expectEqual(resolveParseTarget(lastFocused: .none, source: "/tmp/a", target: ""), .target,
+            "resolveParseTarget: 源已填、目标空 → 补目标，不覆盖已填的源")
+expectEqual(resolveParseTarget(lastFocused: .none, source: "", target: "/data"), .source,
+            "resolveParseTarget: 目标已填、源空 → 补源，不覆盖已填的目标")
 expectEqual(resolveParseTarget(lastFocused: .none, source: "/tmp/a", target: "/data"), .target,
             "resolveParseTarget: 两框都有内容、无焦点 → 填目标（状态栏写明可改）")
-expectEqual(resolveParseTarget(lastFocused: .none, source: "   ", target: "/data"), .target,
-            "resolveParseTarget: 纯空白按空处理")
+expectEqual(resolveParseTarget(lastFocused: .none, source: "   ", target: "/data"), .source,
+            "resolveParseTarget: 纯空白按空处理（源视为空、目标已填 → 补源）")
 
 let srs = splitRemoteSpec("user@192.168.1.5:2222:/data")
 expectEqual(srs?.host, "user@192.168.1.5", "splitRemoteSpec: host（含端口时拆出）")
@@ -1129,6 +1130,65 @@ expectTrue(!toolScript.contains("exec omp"), "启动工具脚本: 全文不含 e
 expectTrue(toolScript.contains("exec \"${SHELL:-/bin/zsh}\" -il"), "启动工具脚本: 含回到交互 shell 的收尾")
 expectTrue(!toolScript.contains("exit $_rc"), "启动工具脚本: 不因一次性任务而提前 exit")
 expectTrue(zshSyntaxOK(toolScript), "启动工具脚本: zsh -n 语法通过")
+
+// ============================================================
+// 20. 浏览远端前置校验（0.5.4）
+// 旧实现只判断「路径里有没有冒号」：ssh://bad 被拆成 host="ssh"、乱码:xxx 被拆成 host="乱码"，
+// 照样弹「浏览远端目录」输入框并真的发起 ssh，最后弹一个「远端浏览失败」报错。
+// 另外 splitRemotePath 只拆第一个冒号，host:2200:/data 会丢端口、起始路径变成 "2200:/data"。
+// ============================================================
+func plan(_ field: String, _ user: String = "", _ host: String = "", _ port: String = "",
+          others: [String] = [], known: [String] = []) -> BrowseHostPlan {
+    browseHostPlan(fieldText: field, credUser: user, credHost: host, credPort: port,
+                   otherPaths: others, knownHosts: known)
+}
+let pPort = plan("jykj@192.168.198.101:2200:/data")
+expectEqual(pPort.hostSpec, "jykj@192.168.198.101:2200", "浏览远端: 带端口的远端路径保留端口")
+expectEqual(pPort.startPath, "/data", "浏览远端: 带端口的远端路径起始路径不被端口污染")
+expectTrue(pPort.error.isEmpty, "浏览远端: 合法远端路径不拦下")
+let pEmptyPath = plan("jykj@192.168.198.101:2200:")
+expectEqual(pEmptyPath.startPath, "~", "浏览远端: 解析回填的空路径从 ~ 开始")
+expectEqual(pEmptyPath.hostSpec, "jykj@192.168.198.101:2200", "浏览远端: 空路径仍保留端口")
+let pURL = plan("ssh://bad")
+expectTrue(!pURL.error.isEmpty && pURL.hostSpec.isEmpty, "浏览远端: ssh:// 片段在弹窗前拦下")
+let pJunk = plan("乱码:xxx")
+expectTrue(!pJunk.error.isEmpty && pJunk.hostSpec.isEmpty, "浏览远端: 非 ASCII 主机在弹窗前拦下")
+let pLocal = plan("/Users/me/wrong")
+expectTrue(!pLocal.error.isEmpty && pLocal.hostSpec.isEmpty, "浏览远端: 本地路径误填在弹窗前拦下")
+let pBare = plan("abc")
+expectTrue(!pBare.error.isEmpty && pBare.hostSpec.isEmpty, "浏览远端: 无冒号的乱码在弹窗前拦下")
+let pAlias = plan("notahost:/tmp")
+expectTrue(!pAlias.error.isEmpty && pAlias.hostSpec.isEmpty, "浏览远端: 未在 ssh config 里的别名拦下")
+expectEqual(plan("devbox:/tmp", known: ["devbox"]).hostSpec, "devbox", "浏览远端: ssh config 里的别名放行")
+expectEqual(plan("192.168.1.5:/data").hostSpec, "192.168.1.5", "浏览远端: 直接写 IP 无需 ssh config")
+expectEqual(plan("[::1]:/tmp").hostSpec, "[::1]", "浏览远端: 方括号 IPv6 放行")
+let pCred = plan("", "jykj", "192.168.198.101", "2200")
+expectEqual(pCred.hostSpec, "jykj@192.168.198.101:2200", "浏览远端: 路径框空时按解析结果的主机（含端口）")
+expectEqual(pCred.startPath, "~", "浏览远端: 走解析结果时从 ~ 开始")
+expectTrue(!pCred.note.isEmpty, "浏览远端: 用解析结果主机时状态栏须说明")
+let pNone = plan("")
+expectTrue(!pNone.error.isEmpty && pNone.error.contains("解析"), "浏览远端: 什么都没有时明确提示先解析")
+expectEqual(plan("192.168.198.101:2200:/data").startPath, "/data", "浏览远端: 无用户名带端口也正确")
+
+// ============================================================
+// 21. 密码只提示、绝不落明文（0.5.4）
+// ============================================================
+expectEqual(passwordNotice(pc("jykj@192.168.198.101")), "", "密码提示: 无密码不加话")
+let passInfo = pc("jykj:S3cret@p!@192.168.198.101")
+let passTip = passwordNotice(passInfo)
+expectTrue(!passTip.isEmpty && passTip.contains("密码"), "密码提示: 有密码时明确说明不保存")
+expectTrue(!passTip.contains("S3cret") && !passTip.contains("p!"), "密码提示: 提示文案不含明文密码")
+expectTrue(!buildHostSpec(passInfo).contains("S3cret"), "密码提示: hostSpec 不含明文密码")
+
+// ============================================================
+// 22. 高级选项折叠后的默认摘要（0.5.4）
+// 控件隐藏不等于失去作用：折叠按钮的 tooltip 必须能说出当前默认值，值仍由 makeCopyParams 读取。
+// ============================================================
+let advDefault = advancedSummary(preserve: true, resume: true, bwlimit: "")
+expectTrue(advDefault.contains("保留属性") && advDefault.contains("断点续传"), "高级选项摘要: 两项默认开启可见")
+expectTrue(advDefault.contains("不限速"), "高级选项摘要: 默认不限速可见")
+let advChanged = advancedSummary(preserve: false, resume: false, bwlimit: "3.5")
+expectTrue(advChanged.contains("3.5") && advChanged != advDefault, "高级选项摘要: 改过的值要能反映出来")
 
 // ============================================================
 // 汇总
