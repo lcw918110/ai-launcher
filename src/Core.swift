@@ -25,10 +25,12 @@ struct CopyConfig {
 struct CopyParams {
     var source: String      // 本地路径 或 user@host[:port]:path
     var target: String      // 本地路径 或 user@host[:port]:path
-    var recursive: Bool
     var preserveAttrs: Bool
     var resume: Bool        // 断点续传
     var bwlimitKbps: Int = 0 // rsync --bwlimit，单位 KiB/s；0 表示不限速
+    // 注：没有 recursive 开关。互拷的对象本来就是目录/文件树，递归是固有行为；
+    // 旧版那个复选框被 rsync 的 -a 吞掉（勾「保留属性」时取消「递归」照样递归），
+    // 是个看得见却无效的控件，0.5.2 起删掉，命令里恒定带 -r。
 }
 
 // 连接信息（用户名/密码/主机/端口分离）
@@ -173,6 +175,17 @@ func parseConnection(_ input: String) -> ConnectionInfo {
     let (host, port) = splitHostPort(hostPart)
 
     return ConnectionInfo(user: user, password: password, host: host, port: port)
+}
+
+// 连接串粘了却没点「解析」时，makeCopyParams 根本不读它，等于静默忽略用户输入。
+// 判据：连接串非空 + 凭据框全空（解析、联想选中、浏览远端都会填凭据框）。
+// 不替用户猜、不抢焦点，只在「开始拷贝」前拦一下并说清楚。
+func needsParseReminder(conn: String, user: String, host: String, port: String) -> Bool {
+    let c = conn.trimmingCharacters(in: .whitespacesAndNewlines)
+    if c.isEmpty { return false }
+    return user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+           host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+           port.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 }
 
 // 由连接信息拼出 user@host[:port] 形式（供 rsync/scp 使用）
@@ -550,7 +563,8 @@ func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool,
     let srcRemote = isRemotePath(params.source)
     let dstRemote = isRemotePath(params.target)
 
-    let recursiveFlag = params.recursive ? " -r" : ""
+    // 递归恒定：-a 本身含 -r，但关掉「保留属性」时也必须递归，所以显式写死 -r
+    let recursiveFlag = " -r"
     let preserveFlag = params.preserveAttrs ? " -a" : ""
     // 续传统一用 --partial-dir：半截文件留在目标端的 .rsync-partial 里，重跑时 rsync 以它为基底做增量，
     // 不会把「看起来完整、实际缺尾」的文件留在最终路径；也不用 --append-verify —— 目标文件被改短时
@@ -606,8 +620,7 @@ func buildCopyCommand(cfg: CopyConfig, params: CopyParams, rsyncAvailable: Bool,
 
     // 无 rsync：降级 scp（-r 递归 -p 保留属性；注意 scp 不支持断点续传，端口用 -P）
     // 限速也能生效：scp -l 的单位是 Kbit/s，换算成 KiB/s * 8
-    var scpFlags = ""
-    if params.recursive { scpFlags += " -r" }
+    var scpFlags = " -r"
     if params.preserveAttrs { scpFlags += " -p" }
     if params.bwlimitKbps > 0 { scpFlags += " -l \(params.bwlimitKbps * 8)" }
     var srcArg = params.source
@@ -734,7 +747,8 @@ func buildRelayResumeCommand(params: CopyParams, root: String = relayStagingRoot
     }
     let stage = relayStagingDir(params: params, root: root)
     let name = splitDirAndName(s.path).name
-    let recursiveFlag = params.recursive ? " -r" : ""
+    // 递归恒定：-a 本身含 -r，但关掉「保留属性」时也必须递归，所以显式写死 -r
+    let recursiveFlag = " -r"
     let preserveFlag = params.preserveAttrs ? " -a" : ""
     // --partial-dir 把半截文件留在专属目录里，重跑时 rsync 以它为基底做增量，比 --append-verify 安全
     let resumeFlags = params.resume ? " --partial --partial-dir=.rsync-partial" : ""
@@ -920,10 +934,10 @@ func loadCopyConfig(path: String = configPath) -> CopyConfig {
 struct CopyMemory {
     var source: String
     var target: String
-    var recursive: Bool
     var preserveAttrs: Bool
     var resume: Bool
     var bwlimitMBps: String   // 原样保存用户输入（空表示不限速），回填后显示一致
+    // 注：不存 recursive（递归恒真），旧文件里若有该键，读取时忽略即可。
 }
 
 func copyMemoryPath(home: String = NSHomeDirectory()) -> String {
@@ -934,7 +948,6 @@ func encodeCopyMemory(_ m: CopyMemory) -> Data? {
     let dict: [String: Any] = [
         "source": m.source,
         "target": m.target,
-        "recursive": m.recursive,
         "preserveAttrs": m.preserveAttrs,
         "resume": m.resume,
         "bwlimitMBps": m.bwlimitMBps,
@@ -943,6 +956,7 @@ func encodeCopyMemory(_ m: CopyMemory) -> Data? {
 }
 
 // 容错：缺字段用缺省值；源和目标都为空视为「没有记录」（避免回填一个空壳）
+// 旧版写的 recursive 键直接忽略（递归现在恒真），不必升级用户手上的 last-copy.json
 func decodeCopyMemory(_ data: Data) -> CopyMemory? {
     guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
     let source = json["source"] as? String ?? ""
@@ -950,7 +964,6 @@ func decodeCopyMemory(_ data: Data) -> CopyMemory? {
     if source.isEmpty && target.isEmpty { return nil }
     return CopyMemory(source: source,
                       target: target,
-                      recursive: json["recursive"] as? Bool ?? true,
                       preserveAttrs: json["preserveAttrs"] as? Bool ?? true,
                       resume: json["resume"] as? Bool ?? true,
                       bwlimitMBps: json["bwlimitMBps"] as? String ?? "")

@@ -8,10 +8,9 @@ extension AppDelegate {
         var src = copySourceField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         var dst = copyTargetField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // 连接信息（用户名/密码/IP/端口）
-        // 安全取舍：密码字段（copyPassField）此处【故意不读取】——密码绝不进入命令行、
-        // 不写入 .command 文件、不落盘；实际认证由 ssh 在 Terminal 真 TTY 中交互提示输密码。
-        // 密码框仅作回显/占位，用户仍需在 Terminal 里手动输密码（或依赖 ssh 密钥免密）。
+        // 连接信息（用户名 / IP / 端口）：这三个框是「解析结果」的只读展示，
+        // 但相对路径（不以 / 开头、无冒号）仍要靠它们补 host 前缀，所以这里照读。
+        // 密码不存在于表单：认证由 ssh 在 Terminal 真 TTY 里交互，不进命令行、不落盘。
         let connUser = copyUserField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let connHost = copyHostField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let connPort = copyPortField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -40,7 +39,6 @@ extension AppDelegate {
         let params = CopyParams(
             source: src,
             target: dst,
-            recursive: copyRecursiveCheck.state == .on,
             preserveAttrs: copyPreserveCheck.state == .on,
             resume: copyResumeCheck.state == .on,
             bwlimitKbps: bwKbps
@@ -49,6 +47,14 @@ extension AppDelegate {
     }
 
     @objc func startCopy(_ sender: Any) {
+        // 连接串粘了却没点「解析」：命令根本不读它，静默开跑等于吞掉用户输入，先拦一下说清楚
+        if needsParseReminder(conn: copyConnField.stringValue,
+                              user: copyUserField.stringValue,
+                              host: copyHostField.stringValue,
+                              port: copyPortField.stringValue) {
+            copyStatusLabel.stringValue = "连接串还没解析：点「解析」后再开始（否则这次会忽略它）"
+            return
+        }
         let cfg = loadCopyConfig()
         let built = makeCopyParams()
         guard let params = built.params else {
@@ -169,7 +175,6 @@ extension AppDelegate {
     func rememberCurrentCopy(params: CopyParams) {
         let mem = CopyMemory(source: params.source,
                              target: params.target,
-                             recursive: params.recursive,
                              preserveAttrs: params.preserveAttrs,
                              resume: params.resume,
                              bwlimitMBps: copyBwlimitField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -273,10 +278,12 @@ extension AppDelegate {
                 return
             }
             debugLog("[互拷] tar 流中转（直连不通）: \(cmd)")
+            // tar 流只做字节搬运，表单上的选项都管不到它：明说，别让用户以为限了速 / 保留了属性
+            let tarNote = "（此路径下「保留属性」「断点续传」「限速」均不适用，tar 按默认行为搬运）"
             if !params.resume {
-                copyStatusLabel.stringValue = "直连不通，已自动改走本机中转（tar 流）：不占本地磁盘，但未勾「断点续传」故中断要重来"
+                copyStatusLabel.stringValue = "直连不通，已自动改走本机中转（tar 流）：不占本地磁盘，但未勾「断点续传」故中断要重来 " + tarNote
             } else {
-                copyStatusLabel.stringValue = "直连不通，已自动改走本机中转（tar 流）：本机无可用 rsync，不占盘但不可续传"
+                copyStatusLabel.stringValue = "直连不通，已自动改走本机中转（tar 流）：本机无可用 rsync，不占盘但不可续传 " + tarNote
             }
             // tar 流没有 --log-file，日志里只有开始/结束与退出码，明细仍在 Terminal 里
             guard launchCommandInTerminal("echo '===== 开始中转拷贝 ====='; " + cmd,

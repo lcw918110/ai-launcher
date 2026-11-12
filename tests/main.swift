@@ -229,11 +229,11 @@ expectEqual(deriveDirection(src: "/a", dst: "/b"), "local", "deriveDirection: �
 // ============================================================
 let cfg = CopyConfig(defaultFlags: [])
 func cmd(_ source: String, _ target: String,
-         recursive: Bool = true, preserveAttrs: Bool = true, resume: Bool = true,
+         preserveAttrs: Bool = true, resume: Bool = true,
          rsync: Bool = true) -> String {
     buildCopyCommand(cfg: cfg, params: CopyParams(
         source: source, target: target,
-        recursive: recursive, preserveAttrs: preserveAttrs, resume: resume),
+        preserveAttrs: preserveAttrs, resume: resume),
         rsyncAvailable: rsync)
 }
 
@@ -262,12 +262,12 @@ expectEqual(cmd("user@h1:/a", "user@h2:/b"),
             "ssh -t 'user@h1' 'rsync -r -a --partial --partial-dir=.rsync-partial --info=progress2 '\\''/a'\\'' '\\''user@h2:/b'\\'''",
             "buildCopyCommand: 双远端直拷默认端口")
 
-expectEqual(cmd("/Users/me/a", "/Users/me/b", recursive: true, preserveAttrs: false, resume: false),
+expectEqual(cmd("/Users/me/a", "/Users/me/b", preserveAttrs: false, resume: false),
             "rsync -r --info=progress2 '/Users/me/a' '/Users/me/b'",
             "buildCopyCommand: 本地拷贝最小选项")
 
-expectEqual(cmd("/Users/me/my data", "user@h:/tmp/x y", recursive: false, preserveAttrs: false, resume: false),
-            "rsync --info=progress2 '/Users/me/my data' 'user@h:/tmp/x y'",
+expectEqual(cmd("/Users/me/my data", "user@h:/tmp/x y", preserveAttrs: false, resume: false),
+            "rsync -r --info=progress2 '/Users/me/my data' 'user@h:/tmp/x y'",
             "buildCopyCommand: 路径含空格正确加引号")
 
 // 注：isRemotePath 为真时 splitRemoteSpec 必然可解析，故「解析失败返回空」不可达；
@@ -486,31 +486,31 @@ expectEqual(splitDirAndName("rel").dir, ".", "splitDirAndName: 相对路径")
 // ============================================================
 expectEqual(buildRelayCopyCommand(params: CopyParams(
                 source: "user@192.168.1.5:/data/a", target: "user@192.168.1.6:/data/b",
-                recursive: true, preserveAttrs: true, resume: true)),
+                preserveAttrs: true, resume: true)),
             "ssh 'user@192.168.1.5' 'tar -cf - -C '\\''/data'\\'' '\\''a'\\''' | ssh 'user@192.168.1.6' 'mkdir -p '\\''/data/b'\\'' && tar -xf - -C '\\''/data/b'\\'''",
             "buildRelayCopyCommand: 双远端默认端口（不同名时目标当容器，落 /data/b/a）")
 
 expectEqual(buildRelayCopyCommand(params: CopyParams(
                 source: "user@192.168.1.5:2222:/data/a", target: "user@192.168.1.6:2200:/data/b",
-                recursive: true, preserveAttrs: true, resume: true)),
+                preserveAttrs: true, resume: true)),
             "ssh -p 2222 'user@192.168.1.5' 'tar -cf - -C '\\''/data'\\'' '\\''a'\\''' | ssh -p 2200 'user@192.168.1.6' 'mkdir -p '\\''/data/b'\\'' && tar -xf - -C '\\''/data/b'\\'''",
             "buildRelayCopyCommand: 双端口")
 
 expectEqual(buildRelayCopyCommand(params: CopyParams(
                 source: "/local/a", target: "user@h:/data/b",
-                recursive: true, preserveAttrs: true, resume: true)),
+                preserveAttrs: true, resume: true)),
             "", "buildRelayCopyCommand: 非双远端返回空")
 
 // 回归（真机验证时发现）：目标必须解到「父目录」，否则结果是 <目标>/<源名> 多嵌一层
 let tarCmd = buildRelayCopyCommand(params: CopyParams(
         source: "user@h1:/srv/report", target: "user@h2:/backup/report",
-        recursive: true, preserveAttrs: true, resume: true))
+        preserveAttrs: true, resume: true))
 expectTrue(tarCmd.contains("mkdir -p '\\''/backup'\\''"), "relayTar: mkdir 建的是目标父目录")
 expectTrue(!tarCmd.contains("/backup/report'"), "relayTar: 不再拿完整目标路径当解包目录（否则多一层）")
 // 单文件源同样落到目标父目录，不受影响
 let tarFileCmd = buildRelayCopyCommand(params: CopyParams(
         source: "user@h1:/srv/big.iso", target: "user@h2:/backup/big.iso",
-        recursive: true, preserveAttrs: true, resume: true))
+        preserveAttrs: true, resume: true))
 expectTrue(tarFileCmd.contains("tar -cf - -C '\\''/srv'\\'' '\\''big.iso'\\''"), "relayTar: 单文件打包父目录 + 文件名")
 expectTrue(tarFileCmd.contains("mkdir -p '\\''/backup'\\'' && tar -xf - -C '\\''/backup'\\''"),
            "relayTar: 单文件解到目标父目录")
@@ -518,7 +518,7 @@ expectTrue(tarFileCmd.contains("mkdir -p '\\''/backup'\\'' && tar -xf - -C '\\''
 // 目标末段与源名不同：目标当容器目录（否则会丢掉末段，/backup/2026 变成 /backup/report）
 let tarContainerCmd = buildRelayCopyCommand(params: CopyParams(
         source: "user@h1:/srv/report", target: "user@h2:/backup/2026",
-        recursive: true, preserveAttrs: true, resume: true))
+        preserveAttrs: true, resume: true))
 expectTrue(tarContainerCmd.contains("mkdir -p '\\''/backup/2026'\\''"),
            "relayTar: 不同名时目标当容器（落 /backup/2026/report）")
 
@@ -528,7 +528,7 @@ expectTrue(tarContainerCmd.contains("mkdir -p '\\''/backup/2026'\\''"),
 let relayRoot = "/tmp/relay-root"
 let relayParams = CopyParams(source: "user@192.168.1.5:/data/big.iso",
                              target: "user@192.168.1.6:/data/dst",
-                             recursive: true, preserveAttrs: true, resume: true)
+                             preserveAttrs: true, resume: true)
 let relayCmd = buildRelayResumeCommand(params: relayParams, root: relayRoot)
 expectTrue(relayCmd.contains("--partial"), "relayResume: 带 --partial（断点续传）")
 expectTrue(relayCmd.contains("--partial-dir=.rsync-partial"), "relayResume: 用 partial-dir 保留半截文件")
@@ -551,7 +551,7 @@ expectTrue(stage1.hasPrefix(relayRoot + "/big.iso-"), "relayStagingDir: 以源�
 // 换目标机 → 目录必须变，避免两个任务写同一份暂存
 let stageOther = relayStagingDir(params: CopyParams(source: "user@192.168.1.5:/data/big.iso",
                                                     target: "user@192.168.1.7:/data/dst",
-                                                    recursive: true, preserveAttrs: true,
+                                                    preserveAttrs: true,
                                                     resume: true),
                                  root: relayRoot)
 expectTrue(stageOther != stage1, "relayStagingDir: 不同目标得到不同暂存目录")
@@ -559,13 +559,13 @@ expectTrue(stageOther != stage1, "relayStagingDir: 不同目标得到不同暂�
 // 端口要透传到两段各自的 -e "ssh -p N"
 let relayPortCmd = buildRelayResumeCommand(params: CopyParams(
         source: "user@192.168.1.5:2222:/data/x", target: "user@192.168.1.6:2200:/data/y",
-        recursive: true, preserveAttrs: true, resume: true), root: relayRoot)
+        preserveAttrs: true, resume: true), root: relayRoot)
 expectTrue(relayPortCmd.contains("ssh -p 2222") || relayPortCmd.contains("-p 2222"), "relayResume: 源端口透传")
 expectTrue(relayPortCmd.contains("ssh -p 2200") || relayPortCmd.contains("-p 2200"), "relayResume: 目标端口透传")
 
 // 非法输入兜底
 expectEqual(buildRelayResumeCommand(params: CopyParams(source: "/local/a", target: "user@h:/b",
-                                                      recursive: true, preserveAttrs: true,
+                                                      preserveAttrs: true,
                                                       resume: true), root: relayRoot),
             "", "relayResume: 非双远端返回空")
 
@@ -667,14 +667,14 @@ expectTrue(relayStagingRoot().hasSuffix("/Library/Caches/ai-launcher/relay"),
 
 // 源是 / 时不能生成 .-xxxx 的隐藏目录
 let rootSrcParams = CopyParams(source: "user@a:/", target: "user@b:/dst",
-                               recursive: true, preserveAttrs: true, resume: true)
+                               preserveAttrs: true, resume: true)
 let rootSrcDir = relayStagingDir(params: rootSrcParams, root: "/tmp/relay-root")
 expectTrue(rootSrcDir.hasPrefix("/tmp/relay-root/relay-"), "relayStagingDir: 根路径回落 relay- 前缀")
 expectTrue(!rootSrcDir.contains("/."), "relayStagingDir: 不以点开头（Finder 里可见）")
 
 // 源名含空格时替换成安全字符，避免暂存路径带空格
 let spacedParams = CopyParams(source: "user@a:/data/my dir", target: "user@b:/dst",
-                              recursive: true, preserveAttrs: true, resume: true)
+                              preserveAttrs: true, resume: true)
 let spaced = relayStagingDir(params: spacedParams, root: "/tmp/relay-root")
 expectTrue(spaced.contains("/my_dir-"), "relayStagingDir: 空格替换为下划线")
 expectTrue(!spaced.contains(" "), "relayStagingDir: 目录名不含空格")
@@ -750,7 +750,7 @@ func cmdBW(_ source: String, _ target: String, kbps: Int,
            rsync: Bool = true, logPath: String = "") -> String {
     buildCopyCommand(cfg: cfg,
                      params: CopyParams(source: source, target: target,
-                                        recursive: true, preserveAttrs: true, resume: true,
+                                        preserveAttrs: true, resume: true,
                                         bwlimitKbps: kbps),
                      rsyncAvailable: rsync, logPath: logPath)
 }
@@ -770,7 +770,7 @@ expectEqual(safeFileComponent("a/b:c d"), "a_b_c_d", "safeFileComponent: 路径�
 expectEqual(safeFileComponent("."), "", "safeFileComponent: 纯点名清洗后为空")
 
 let logParams = CopyParams(source: "user@h:/data/report", target: "user@h2:/backup/report",
-                           recursive: true, preserveAttrs: true, resume: true)
+                           preserveAttrs: true, resume: true)
 let logPathA = copyLogPath(params: logParams, root: "/tmp/la-logs")
 expectTrue(logPathA.hasPrefix("/tmp/la-logs/report-"), "copyLogPath: 根目录可控且带源名")
 expectTrue(logPathA.hasSuffix(".log"), "copyLogPath: 后缀 .log")
@@ -799,7 +799,7 @@ expectTrue(cmdDirect.contains("--bwlimit=5120"), "buildCopyCommand: 双远端直
 
 // 中转两段都写同一个日志文件（rsync --log-file 是追加模式）
 let relayP = CopyParams(source: "user@h1:/data/a", target: "user@h2:/data/b",
-                        recursive: true, preserveAttrs: true, resume: true,
+                        preserveAttrs: true, resume: true,
                         bwlimitKbps: 2048)
 let relayWithLog = buildRelayResumeCommand(params: relayP, root: "/tmp/la-stage", logPath: logTarget)
 expectEqual(relayWithLog.components(separatedBy: "--log-file='\(logTarget)'").count - 1, 2,
@@ -811,7 +811,7 @@ expectEqual(relayWithLog.components(separatedBy: "--bwlimit=2048").count - 1, 2,
 // 20. 上次互拷任务（last-copy.json）
 // ============================================================
 let mem = CopyMemory(source: "user@h:/data", target: "/Users/me/backup",
-                     recursive: true, preserveAttrs: false, resume: true, bwlimitMBps: "10")
+                     preserveAttrs: false, resume: true, bwlimitMBps: "10")
 let memData = encodeCopyMemory(mem)!
 let memBack = decodeCopyMemory(memData)
 expectEqual(memBack?.source, "user@h:/data", "memory: 源往返一致")
@@ -819,12 +819,12 @@ expectEqual(memBack?.target, "/Users/me/backup", "memory: 目标往返一致")
 expectEqual(memBack?.preserveAttrs, false, "memory: 布尔选项往返一致")
 expectEqual(memBack?.bwlimitMBps, "10", "memory: 限速原文往返一致（回填显示不丢格式）")
 
-let emptyMem = CopyMemory(source: "", target: "", recursive: true, preserveAttrs: true,
+let emptyMem = CopyMemory(source: "", target: "", preserveAttrs: true,
                           resume: true, bwlimitMBps: "")
 expectTrue(decodeCopyMemory(encodeCopyMemory(emptyMem)!) == nil, "memory: 空记录视为没有（不回填空壳）")
 expectTrue(decodeCopyMemory(Data("not json".utf8)) == nil, "memory: 损坏 JSON 返回 nil")
 let partialMem = Data("{\"source\":\"/a\",\"target\":\"/b\"}".utf8)
-expectEqual(decodeCopyMemory(partialMem)?.recursive, true, "memory: 缺字段用缺省 true")
+expectEqual(decodeCopyMemory(partialMem)?.preserveAttrs, true, "memory: 缺字段用缺省 true")
 expectEqual(decodeCopyMemory(partialMem)?.bwlimitMBps, "", "memory: 缺限速字段回填空串")
 
 let memPath = NSTemporaryDirectory() + "ai-launcher-mem-\(UUID().uuidString).json"
@@ -875,7 +875,7 @@ expectEqual(parseRsyncFlavor("rsync-like 1.0"),
 // —— 直连探测：在源机上套一层 BatchMode 的 ssh，只连主机不碰路径 ——
 let probeParams = CopyParams(source: "user@192.168.1.5:/data/big.iso",
                              target: "user@192.168.1.6:/data/dst",
-                             recursive: true, preserveAttrs: true, resume: true)
+                             preserveAttrs: true, resume: true)
 let directProbe = buildDirectProbeCommand(params: probeParams)
 expectTrue(directProbe.hasPrefix("ssh -o BatchMode=yes"),
            "directProbe: 外层 ssh 走 BatchMode（要密码就判不通，而不是卡住等输入）")
@@ -891,15 +891,15 @@ expectTrue(!directProbe.contains("StrictHostKeyChecking"),
            "directProbe: 不自动接受未知主机键（不往别人的服务器写 known_hosts）")
 expectEqual(buildDirectProbeCommand(params: CopyParams(
                 source: "user@a:2222:/x", target: "user@b:2200:/y",
-                recursive: true, preserveAttrs: true, resume: true)).contains("-p 2222"),
+                preserveAttrs: true, resume: true)).contains("-p 2222"),
             true, "directProbe: 源机端口透传")
 expectTrue(buildDirectProbeCommand(params: CopyParams(
                 source: "user@a:2222:/x", target: "user@b:2200:/y",
-                recursive: true, preserveAttrs: true, resume: true)).contains("-p 2200"),
+                preserveAttrs: true, resume: true)).contains("-p 2200"),
            "directProbe: 目标机端口透传给内层 ssh")
 expectEqual(buildDirectProbeCommand(params: CopyParams(
                 source: "/local/a", target: "user@b:/data",
-                recursive: true, preserveAttrs: true, resume: true)),
+                preserveAttrs: true, resume: true)),
             "", "directProbe: 非双远端返回空（只有服务器↔服务器才需要判断直连）")
 
 // —— 本机探测：中转的前提是本机两端都登得上 ——
@@ -932,7 +932,7 @@ expectEqual(resolveDirectRoute(directReachable: false, localReachable: false,
 
 // —— openrsync 下不能拼 --info=progress2 / --log-file，直连与中转两条路径都要能降下来 ——
 let openParams = CopyParams(source: "/Users/me/data", target: "user@h:/data",
-                            recursive: true, preserveAttrs: true, resume: true)
+                            preserveAttrs: true, resume: true)
 let openCmd = buildCopyCommand(cfg: cfg, params: openParams, rsyncAvailable: true,
                                logPath: "/tmp/x.log", useProgress2: false, useLogFile: false)
 expectTrue(!openCmd.contains("--info=progress2"),
@@ -973,7 +973,7 @@ if let d = cfgJSON, let back = try? JSONSerialization.jsonObject(with: d) as? [S
 
 // last-copy.json 里也只有路径，同一个坑，一并约束
 let memJSON = encodeCopyMemory(CopyMemory(source: "/Users/me/a", target: "u@10.0.0.1:/data/b",
-                                          recursive: true, preserveAttrs: true, resume: true,
+                                          preserveAttrs: true, resume: true,
                                           bwlimitMBps: ""))
 if let d = memJSON, let text = String(data: d, encoding: .utf8) {
     expectTrue(!text.contains("\\/"), "encodeCopyMemory: 源/目标路径不转义斜杠")
@@ -1072,6 +1072,37 @@ try? Data(count: 200).write(to: URL(fileURLWithPath: sizeDir + "/b"))
 expectEqual(directorySizeBytes(sizeDir), 300, "directorySizeBytes: 递归统计两个文件的字节数")
 expectEqual(directorySizeBytes(tailDir + "/no-such-dir"), 0, "directorySizeBytes: 不存在时返回 0")
 try? FileManager.default.removeItem(atPath: tailDir)
+
+// ============================================================
+// 0.5.2 界面精简（TDD 红灯）：递归是固有行为，不再是可关的开关
+// ============================================================
+// 关掉「保留属性」也必须递归：以前 -a 顺带含 -r，取消「递归」复选框就悄悄失效
+expectTrue(cmd("/Users/me/a", "u@h:/b", preserveAttrs: false, resume: false).contains("rsync -r "),
+           "固定递归: rsync 在 preserveAttrs=false 时仍带 -r")
+expectTrue(buildCopyCommand(cfg: cfg, params: CopyParams(source: "/Users/me/a", target: "u@h:/b",
+               preserveAttrs: false, resume: false), rsyncAvailable: false).hasPrefix("scp -r"),
+           "固定递归: scp 降级仍带 -r")
+let relayNoR = buildRelayResumeCommand(params: CopyParams(source: "a@h1:/data/x", target: "b@h2:/backup",
+               preserveAttrs: false, resume: false), root: tailDir + "/stage2")
+expectTrue(relayNoR.contains("rsync -r "), "固定递归: 两段式中转仍带 -r")
+
+// CopyMemory 不该再存 recursive（旧 last-copy.json 里的键忽略即可）
+let memProbe = CopyMemory(source: "a", target: "b", preserveAttrs: true,
+                          resume: true, bwlimitMBps: "")
+let memDict = (try? JSONSerialization.jsonObject(with: encodeCopyMemory(memProbe)!)) as? [String: Any] ?? [:]
+expectTrue(memDict["recursive"] == nil, "CopyMemory: 不再写 recursive 键")
+
+// 连接串粘了却没点「解析」时，不能静默忽略、直接开跑
+expectTrue(needsParseReminder(conn: "jykj@192.0.2.9:2200", user: "", host: "", port: ""),
+           "连接串: 未解析应提醒")
+expectTrue(!needsParseReminder(conn: "", user: "", host: "", port: ""),
+           "连接串: 空串不提醒")
+expectTrue(!needsParseReminder(conn: "   ", user: "", host: "", port: ""),
+           "连接串: 纯空白不提醒")
+expectTrue(!needsParseReminder(conn: "jykj@192.0.2.9:2200", user: "jykj", host: "192.0.2.9", port: "2200"),
+           "连接串: 已解析不提醒")
+expectTrue(!needsParseReminder(conn: "jykj@192.0.2.9", user: "", host: "192.0.2.9", port: ""),
+           "连接串: 用联想填过主机也不提醒")
 
 // ============================================================
 // 汇总

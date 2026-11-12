@@ -5,11 +5,12 @@
 # 10-29 的版本（净少 490 行），当时没有任何机制报警，靠人工翻文档才发现。
 # 断言数是最灵敏的探针——文档写 124、代码实际 311，一跑就露。
 #
-# 校验四件事：
+# 校验五件事：
 #   1. src/Info.plist 的版本 == CHANGELOG 最新条目标题
 #   2. docs/05「覆盖范围（N 条断言）」的 N == test.sh 实际通过数
 #   3. 除 docs/05 那处外，其余 md 不再硬写当前断言数（历史记录行与 CHANGELOG 除外）
 #   4. 文档里「（当前 x.y.z）」的版本 == Info.plist
+#   5. 现行规格/使用说明不得再写已下线的界面功能（旧句式黑名单）
 #
 # 用法：./scripts/check-docs.sh [--assert-count N]（--assert-count 可跳过跑测试）
 set -u
@@ -85,6 +86,18 @@ while IFS= read -r line; do
   fi
 done < <(grep -rn "当前 [0-9]\." docs/ README.md 2>/dev/null)
 [ "$VER_STALE" -eq 0 ] && ok "文档里的「当前 x.y.z」均与版本一致"
+
+# ---------- 5. 现行规格/使用说明不得再描述已下线的功能 ----------
+# 2026-11-12 查到 docs/02 仍写着「经本机中转」按钮（0.4.6 已删）和「解析不自动改
+# 源/目标路径」（0.5.0 已改）：版本号、断言数都对，功能描述却是旧的。旧句式做黑名单。
+STALE_UI=0
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  case "$line" in *"| 2026-"*) continue ;; esac   # 修订记录表本来就该写旧事
+  bad "现行文档仍写着已下线的功能：$line"
+  STALE_UI=$((STALE_UI + 1))
+done < <(grep -rnE '经本机中转」按钮|勾选递归|递归 / 保留属性|填用户名/密码/IP/端口|密码框只作占位|粘贴自动解析|不\*\*自动改源|/IP 框输入' docs/02-需求规格.md docs/04-使用说明.md 2>/dev/null)
+[ "$STALE_UI" -eq 0 ] && ok "现行规格/使用说明没有已下线功能的残留描述"
 
 # ---------- 汇总 ----------
 print -r -- ""

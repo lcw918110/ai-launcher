@@ -62,14 +62,15 @@ extension AppDelegate {
         dstRow.addView(dstBrowse, in: .trailing)
         stack.addView(dstRow, in: .leading)
 
-        // 连接串（粘贴自动解析）
+        // 连接串：粘贴后要点「解析」才会生效（不自动解析——自动解析会抢走正在输入的焦点）。
+        // 万一用户粘完直接点「开始拷贝」，startCopy 会明确拦下并提示，不会静默忽略。
         let connRow = NSStackView()
         connRow.orientation = .horizontal
         connRow.spacing = 8
         let connLabel = NSTextField(labelWithString: "连接串")
         connLabel.font = NSFont.systemFont(ofSize: 12)
         copyConnField = NSTextField(string: "")
-        copyConnField.placeholderString = "user@host / user:pass@host / ssh://… / host:port"
+        copyConnField.placeholderString = "粘贴后点「解析」：user@host / ssh://… / host:port"
         copyConnField.controlSize = .small
         copyConnField.delegate = self
         copyConnField.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
@@ -81,47 +82,54 @@ extension AppDelegate {
         connRow.addView(parseBtn, in: .trailing)
         stack.addView(connRow, in: .leading)
 
-        // 用户名 / 密码 / IP / 端口（独立字段）
+        // 「解析结果」只读展示：由「解析 / 联想选中 / 浏览远端」填入。
+        // 以前这行是可编辑输入框，但改了 IP 框并不会改变命令（命令用的是路径框里的 user@host），
+        // 属于「看得见、改了没反应」；密码框更是一开始就故意不进命令。现在改成明确的只读展示，
+        // 要换主机就改连接串再点一次「解析」。
         let credRow = NSStackView()
         credRow.orientation = .horizontal
-        credRow.spacing = 8
+        credRow.spacing = 6
+        func credCaption(_ s: String) -> NSTextField {
+            let l = NSTextField(labelWithString: s)
+            l.font = NSFont.systemFont(ofSize: 11)
+            l.textColor = .secondaryLabelColor
+            return l
+        }
+        let credLabel = credCaption("解析结果（只读）")
         copyUserField = NSTextField(string: "")
-        copyUserField.placeholderString = "用户名"
         copyUserField.controlSize = .small
-        copyUserField.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
-        copyPassField = NSSecureTextField(string: "")
-        copyPassField.placeholderString = "密码（Terminal 输入）"
-        copyPassField.controlSize = .small
-        copyPassField.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
+        copyUserField.widthAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
         copyHostField = NSTextField(string: "")
-        copyHostField.placeholderString = "IP/主机"
         copyHostField.controlSize = .small
-        copyHostField.delegate = self
         copyHostField.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
         copyPortField = NSTextField(string: "")
-        copyPortField.placeholderString = "端口"
         copyPortField.controlSize = .small
-        copyPortField.widthAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
+        copyPortField.widthAnchor.constraint(greaterThanOrEqualToConstant: 50).isActive = true
+        let credFields: [NSTextField] = [copyUserField, copyHostField, copyPortField]
+        for f in credFields {
+            f.isEditable = false
+            f.isSelectable = true   // 可选中复制，但不能改
+            f.toolTip = "解析结果，只读；要换主机请改连接串再点「解析」"
+        }
+        credRow.addView(credLabel, in: .leading)
+        credRow.addView(credCaption("用户"), in: .leading)
         credRow.addView(copyUserField, in: .leading)
-        credRow.addView(copyPassField, in: .leading)
+        credRow.addView(credCaption("主机"), in: .leading)
         credRow.addView(copyHostField, in: .leading)
+        credRow.addView(credCaption("端口"), in: .leading)
         credRow.addView(copyPortField, in: .leading)
         stack.addView(credRow, in: .leading)
 
-        // 选项复选
+        // 选项复选（递归不再是可关的开关：命令恒定带 -r，旧「递归」复选框被 -a 吞掉，已删）
         let optRow = NSStackView()
         optRow.orientation = .horizontal
         optRow.spacing = 12
-        copyRecursiveCheck = NSButton(checkboxWithTitle: "递归", target: nil, action: nil)
-        copyRecursiveCheck.controlSize = .small
-        copyRecursiveCheck.state = .on
         copyPreserveCheck = NSButton(checkboxWithTitle: "保留属性", target: nil, action: nil)
         copyPreserveCheck.controlSize = .small
         copyPreserveCheck.state = .on
         copyResumeCheck = NSButton(checkboxWithTitle: "断点续传", target: nil, action: nil)
         copyResumeCheck.controlSize = .small
         copyResumeCheck.state = .on
-        optRow.addView(copyRecursiveCheck, in: .leading)
         optRow.addView(copyPreserveCheck, in: .leading)
         optRow.addView(copyResumeCheck, in: .leading)
         // 限速：留空表示不限速；输入 MB/s（可带小数），传给 rsync 时换算成 KiB/s
@@ -161,16 +169,13 @@ extension AppDelegate {
 
     // 选中免密机器后，按触发框类型智能填回，并联动填 IP/主机、用户名
     // （TriggerField / FillPlan / buildFillPlan 已迁至 src/Core.swift 纯函数）
-    // forceTrigger：预设下拉等场景直接指定填哪个框，不依赖「最后编辑的输入框」
-    func applySSHHostToFields(_ spec: String, forceTrigger: TriggerField? = nil) {
+    // forceTrigger 参数随 0.5.0 删掉「预设」下拉后就没有调用方了，一并移除
+    func applySSHHostToFields(_ spec: String) {
         let trigger: TriggerField
-        if let forced = forceTrigger {
-            trigger = forced
-        } else if let src = autocompleteSourceField {
+        if let src = autocompleteSourceField {
             if src === copySourceField { trigger = .source }
             else if src === copyTargetField { trigger = .target }
             else if src === copyConnField { trigger = .conn }
-            else if src === copyHostField { trigger = .host }
             else { trigger = .none }
         } else {
             trigger = .none
@@ -215,9 +220,9 @@ extension AppDelegate {
 
     @objc func controlTextDidChange(_ obj: Notification) {
         guard let field = obj.object as? NSTextField else { return }
-        // 只在四个目标输入框触发联想
+        // 只在三个可编辑的输入框触发联想（凭据行已改只读，不再是联想入口）
         guard field === copySourceField || field === copyTargetField ||
-              field === copyConnField || field === copyHostField else { return }
+              field === copyConnField else { return }
         // 输入时再记一次，防止 beginEditing 通知因窗口未激活而漏发
         if field === copySourceField || field === copyTargetField { lastPathField = field }
         autocompleteSourceField = field
@@ -328,8 +333,8 @@ extension AppDelegate {
             debugLog("[互拷] 连接串解析失败（长度 \(raw.count)）")
             return
         }
+        // 密码不回填到任何控件：它从不参与命令，显示出来只会让人误以为认证已经配好
         copyUserField.stringValue = info.user
-        copyPassField.stringValue = info.password
         copyHostField.stringValue = info.host
         copyPortField.stringValue = info.port
 
@@ -525,17 +530,15 @@ extension AppDelegate {
     // —— 互拷表单状态快照：刷新重建窗口时保留用户已填内容，避免清空 ——
     struct CopyFormState {
         var source: String; var target: String; var conn: String
-        var user: String; var pass: String; var host: String; var port: String
-        var recursive: Bool; var preserve: Bool; var resume: Bool
+        var user: String; var host: String; var port: String
+        var preserve: Bool; var resume: Bool
         var bwlimit: String
     }
 
     func captureCopyForm() -> CopyFormState {
         CopyFormState(source: copySourceField.stringValue, target: copyTargetField.stringValue,
                       conn: copyConnField.stringValue, user: copyUserField.stringValue,
-                      pass: copyPassField.stringValue, host: copyHostField.stringValue,
-                      port: copyPortField.stringValue,
-                      recursive: copyRecursiveCheck.state == .on,
+                      host: copyHostField.stringValue, port: copyPortField.stringValue,
                       preserve: copyPreserveCheck.state == .on,
                       resume: copyResumeCheck.state == .on,
                       bwlimit: copyBwlimitField.stringValue)
@@ -546,10 +549,8 @@ extension AppDelegate {
         copyTargetField.stringValue = s.target
         copyConnField.stringValue = s.conn
         copyUserField.stringValue = s.user
-        copyPassField.stringValue = s.pass
         copyHostField.stringValue = s.host
         copyPortField.stringValue = s.port
-        copyRecursiveCheck.state = s.recursive ? .on : .off
         copyPreserveCheck.state = s.preserve ? .on : .off
         copyResumeCheck.state = s.resume ? .on : .off
         copyBwlimitField.stringValue = s.bwlimit
@@ -563,7 +564,6 @@ extension AppDelegate {
         guard srcEmpty && dstEmpty, let m = loadCopyMemory() else { return }
         copySourceField.stringValue = m.source
         copyTargetField.stringValue = m.target
-        copyRecursiveCheck.state = m.recursive ? .on : .off
         copyPreserveCheck.state = m.preserveAttrs ? .on : .off
         copyResumeCheck.state = m.resume ? .on : .off
         copyBwlimitField.stringValue = m.bwlimitMBps

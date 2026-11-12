@@ -8,12 +8,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     // 互拷表单控件
     var copySourceField: NSTextField!
     var copyTargetField: NSTextField!
-    var copyConnField: NSTextField!      // 连接串输入框（粘贴自动解析）
+    var copyConnField: NSTextField!      // 连接串输入框（粘贴后点「解析」生效）
+    // 以下三个是「解析结果」的只读展示，不是输入控件；要换主机改连接串再解析一次
     var copyUserField: NSTextField!      // 用户名
-    var copyPassField: NSSecureTextField! // 密码（仅回显/可选；安全取舍：绝不写入 .command、不落盘，实际认证走 ssh 真 TTY 交互输密码）
     var copyHostField: NSTextField!      // IP/主机
     var copyPortField: NSTextField!      // 端口
-    var copyRecursiveCheck: NSButton!
     var copyPreserveCheck: NSButton!
     var copyResumeCheck: NSButton!
     var copyBwlimitField: NSTextField!   // 限速（MB/s，空 = 不限速）
@@ -159,17 +158,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             debugLog("[自测] 找到 \(buttons.count) 个启动按钮（--no-launch：不点击、不弹 Terminal）")
         }
 
-        // 自测：验证互拷区块已构建 + 命令拼装 + 连接串解析
-        debugLog("[自测] 互拷源输入框存在 = \(copySourceField != nil)")
-        debugLog("[自测] 互拷目标输入框存在 = \(copyTargetField != nil)")
-        debugLog("[自测] 互拷连接串输入框存在 = \(copyConnField != nil)")
-        debugLog("[自测] 互拷用户名输入框存在 = \(copyUserField != nil)")
-        debugLog("[自测] 互拷密码输入框存在 = \(copyPassField != nil)")
-        debugLog("[自测] 互拷主机输入框存在 = \(copyHostField != nil)")
-        debugLog("[自测] 互拷端口输入框存在 = \(copyPortField != nil)")
-        debugLog("[自测] 互拷限速输入框存在 = \(copyBwlimitField != nil)")
+        // 不再用「控件存在 = true」这种假绿断言：控件被创建了不等于接线了。
+        // 界面契约改由下面的 [WIRING] 行为断言（控件状态 + 真人点击结果）与 Core 单测覆盖。
         debugLog("[自测] 上次任务记录存在 = \(loadCopyMemory() != nil) 日志目录 = \(copyLogRoot())")
-        debugLog("[自测] 互拷开始按钮状态标签存在 = \(copyStatusLabel != nil)")
         debugLog("[自测] 窗口内容在滚动视图内 = \(window?.contentView is NSScrollView) 可缩放 = \(window?.styleMask.contains(.resizable) ?? false)")
         debugLog("[自测] 配置 PATH 前缀 = \(loadPathPrepend().joined(separator: ":"))")
         // —— 「解析」回填：模拟真人操作的 GUI 冒烟（TDD）——
@@ -183,7 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         }
         func resetParseFields() {
             for f in [copySourceField, copyTargetField, copyConnField,
-                      copyUserField, copyPassField, copyHostField, copyPortField] { f?.stringValue = "" }
+                      copyUserField, copyHostField, copyPortField] { f?.stringValue = "" }
             _ = window.makeFirstResponder(copyConnField)
             lastPathField = nil                 // 刚启动、还没点过任何路径框
             closeSuggestions()
@@ -246,6 +237,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         let passed = [tddA, tddB, tddC, tddD, tddE, tddF].filter { $0 }.count
         debugLog("[TDD] 解析回填 \(passed)/6 PASS")
         resetParseFields()
+
+        // —— 界面接线契约（TDD 红灯）——
+        // 「递归」复选框默认被 -a 吞掉、密码框从不进命令、凭据三框改了也不影响命令：
+        // 这三类都是「可见但没接线」。断言的是控件状态与真人点击后的结果，不是「控件存在」。
+        let uiRows: [NSStackView] = (contentStack?.views ?? []).compactMap { $0 as? NSStackView }
+        let uiViews = uiRows.flatMap { $0.views }
+        let uiButtons = uiViews.compactMap { $0 as? NSButton }
+        let uiNoRecursive = !uiButtons.contains { $0.title == "递归" }
+        let uiNoPassword = !uiViews.contains { $0 is NSSecureTextField }
+        let uiCredsReadOnly = !copyUserField.isEditable && !copyHostField.isEditable && !copyPortField.isEditable
+        debugLog("[WIRING] 界面无「递归」复选框 = \(uiNoRecursive ? "PASS" : "FAIL")")
+        debugLog("[WIRING] 界面无密码输入框 = \(uiNoPassword ? "PASS" : "FAIL")")
+        debugLog("[WIRING] 凭据框只读 = \(uiCredsReadOnly ? "PASS" : "FAIL")")
+        // 真人操作：粘连接串 → 点「解析」，凭据框应显示结果且不可手改（能改却不生效才是坑）
+        resetParseFields()
+        copyConnField.stringValue = "jykj@192.0.2.9:2200"
+        parseBtn?.performClick(nil)
+        let uiParsedReadOnly = copyHostField.stringValue == "192.0.2.9" && !copyHostField.isEditable
+        debugLog("[WIRING] 解析后主机只读且有值 = \(uiParsedReadOnly ? "PASS" : "FAIL") 主机=\(copyHostField.stringValue) 可编辑=\(copyHostField.isEditable)")
+        // 真人操作：粘连接串不点「解析」直接点「开始拷贝」——必须明确拦下，不能静默忽略。
+        // 路径框故意留空：即使这道防线被删，也只会得到「请填写源路径」，不会真拉起 Terminal 跑拷贝。
+        var startBtn: NSButton?
+        for row in uiRows {
+            for case let b as NSButton in row.views where b.title == "开始拷贝" { startBtn = b }
+        }
+        resetParseFields()
+        copyConnField.stringValue = "jykj@192.0.2.9:2200"
+        startBtn?.performClick(nil)
+        let uiConnGuard = copyStatusLabel.stringValue.contains("连接串还没解析")
+        debugLog("[WIRING] 未解析连接串被拦下 = \(uiConnGuard ? "PASS" : "FAIL") 状态=\(copyStatusLabel.stringValue)")
+        let wiringPassed = [uiNoRecursive, uiNoPassword, uiCredsReadOnly, uiParsedReadOnly, uiConnGuard].filter { $0 }.count
+        debugLog("[WIRING] 界面接线 \(wiringPassed)/5 PASS")
+        resetParseFields()
+
         debugLog("[自测] 工具菜单（日志/暂存/配置）存在 = \(NSApp.mainMenu?.items.contains { $0.submenu?.title == "工具" } ?? false)")
 
         // 滚动布局是否真的生效：文档高度 vs 可视高度
@@ -265,13 +290,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         }
 
         // 联想候选框冒烟：模拟输入免密主机片段，验证 Popover 能弹出且不崩
+        // 凭据行已改只读，联想入口用连接串框（源/目标/连接串三个之一）
         reloadSSHHostsIfNeeded()
-        if let first = sshHostsCache.first, window.makeFirstResponder(copyHostField) {
-            copyHostField.stringValue = String(first.host.prefix(3))
-            controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: copyHostField))
+        if let first = sshHostsCache.first, window.makeFirstResponder(copyConnField) {
+            copyConnField.stringValue = String(first.host.prefix(3))
+            controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: copyConnField))
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 guard let self = self else { return }
-                debugLog("[自测] 联想候选框弹出 = \(self.suggestions?.isShown ?? false)（输入 \(self.copyHostField.stringValue)）")
+                debugLog("[自测] 联想候选框弹出 = \(self.suggestions?.isShown ?? false)（输入 \(self.copyConnField.stringValue)）")
                 self.closeSuggestions()
             }
         } else {

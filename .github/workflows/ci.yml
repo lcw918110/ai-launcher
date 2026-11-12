@@ -24,6 +24,13 @@ jobs:
           n=$(printf '%s\n' "$out" | sed -nE 's/.*测试汇总：([0-9]+) 通过.*/\1/p' | tail -1)
           echo "ASSERT_COUNT=$n" >> "$GITHUB_ENV"
 
+      # 界面控件必须真的接到行为上：只创建 / 只回显 / 只在快照里搬运的控件判失败。
+      # 单独列一步，让「新增控件忘了接线」在 CI 里一眼可见（test.sh 末尾也会跑一遍）。
+      - name: 校验界面控件接线
+        run: |
+          chmod +x scripts/check-ui-wiring.sh
+          ./scripts/check-ui-wiring.sh
+
       # 文档与代码的一致性：版本号、断言数、断言数唯一性。
       # 2026-11-02 文档被整批回退到旧版（净少 490 行）却没人发现，这条用于兜住同类问题。
       - name: 校验文档与代码一致
