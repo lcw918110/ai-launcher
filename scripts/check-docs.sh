@@ -96,7 +96,7 @@ while IFS= read -r line; do
   case "$line" in *"| 2026-"*) continue ;; esac   # 修订记录表本来就该写旧事
   bad "现行文档仍写着已下线的功能：$line"
   STALE_UI=$((STALE_UI + 1))
-done < <(grep -rnE '经本机中转」按钮|勾选递归|递归 / 保留属性|填用户名/密码/IP/端口|密码框只作占位|粘贴自动解析|不\*\*自动改源|/IP 框输入' docs/02-需求规格.md docs/04-使用说明.md 2>/dev/null)
+done < <(grep -rnE '经本机中转」按钮|勾选递归|递归 / 保留属性|填用户名/密码/IP/端口|密码框只作占位|粘贴自动解析|不\*\*自动改源|/IP 框输入|clear && exec' docs/02-需求规格.md docs/04-使用说明.md 2>/dev/null)
 [ "$STALE_UI" -eq 0 ] && ok "现行规格/使用说明没有已下线功能的残留描述"
 
 # ---------- 汇总 ----------

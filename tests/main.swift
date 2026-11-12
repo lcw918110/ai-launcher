@@ -1105,6 +1105,32 @@ expectTrue(!needsParseReminder(conn: "jykj@192.0.2.9", user: "", host: "192.0.2.
            "连接串: 用联想填过主机也不提醒")
 
 // ============================================================
+// 19. 启动工具收尾：退出 CLI 后终端仍可用（0.5.3）
+// 旧写法 `cd … && clear && exec omp` 用 exec 顶替了 shell，omp 一退出窗口里
+// 只剩一个已结束、不能再输入的会话。目标：omp 退出后回到该目录的交互式 shell。
+// ============================================================
+let toolLine = buildToolLaunchLine(dir: "/Users/me/my project", cmd: "omp")
+expectTrue(toolLine.contains("cd '/Users/me/my project'"), "启动工具: cd 到配置目录且正确加引号")
+expectTrue(toolLine.contains("clear"), "启动工具: 保留清屏")
+expectTrue(toolLine.contains("omp"), "启动工具: 命令本体还在")
+expectTrue(!toolLine.contains("exec omp"), "启动工具: 不再用 exec 顶替 shell")
+expectTrue(toolLine.contains("exec \"${SHELL:-/bin/zsh}\" -il"), "启动工具: 末尾 exec 到交互登录 shell")
+expectTrue(toolLine.contains("omp; exec"), "启动工具: 用分号连接，omp 失败也能回到 shell")
+if let cli = toolLine.range(of: "omp"), let sh = toolLine.range(of: "exec \"${SHELL:-/bin/zsh}\" -il") {
+    expectTrue(cli.lowerBound < sh.lowerBound, "启动工具: 交互 shell 排在 CLI 之后")
+} else {
+    expectTrue(false, "启动工具: 交互 shell 排在 CLI 之后（两个片段都要存在）")
+}
+let quoteLine = buildToolLaunchLine(dir: "/Users/me/O'Brien", cmd: "omp")
+expectTrue(quoteLine.contains("'/Users/me/O'\\''Brien'"), "启动工具: 路径含单引号正确转义")
+
+let toolScript = buildCommandScript(cmdLine: toolLine, pathPrepend: ["~/.bun/bin"], autoCloseOnSuccess: false)
+expectTrue(!toolScript.contains("exec omp"), "启动工具脚本: 全文不含 exec omp")
+expectTrue(toolScript.contains("exec \"${SHELL:-/bin/zsh}\" -il"), "启动工具脚本: 含回到交互 shell 的收尾")
+expectTrue(!toolScript.contains("exit $_rc"), "启动工具脚本: 不因一次性任务而提前 exit")
+expectTrue(zshSyntaxOK(toolScript), "启动工具脚本: zsh -n 语法通过")
+
+// ============================================================
 // 汇总
 // ============================================================
 print("\n======== 测试汇总：\(passCount) 通过，\(failures.count) 失败 ========")

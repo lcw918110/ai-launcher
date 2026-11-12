@@ -11,9 +11,8 @@ final class FlippedView: NSView {
 // 免授权启动：写临时 .command 文件并 open，Terminal 新窗口执行
 func launchInTerminal(dir: String, tool: ToolConfig) {
     debugLog("launchInTerminal dir=\(dir) cmd=\(tool.cmd)")
-    let esc = dir.replacingOccurrences(of: "'", with: "'\\''")
-    let cmdLine = "cd '\(esc)' && clear && exec \(tool.cmd)"
-    launchCommandInTerminal(cmdLine)
+    // 收尾逻辑在 Core 纯函数里（可测、可 zsh -n 校验）：退出 CLI 后回到可用 shell
+    launchCommandInTerminal(buildToolLaunchLine(dir: dir, cmd: tool.cmd))
 }
 
 var lastCommandScriptPath = ""   // 最近一份启动脚本；open 失败时用来告诉用户手动执行哪一份

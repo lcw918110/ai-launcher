@@ -68,7 +68,28 @@ def analyze(files):
     return controls, orphans
 
 
-# 自检：喂一份「只创建 / 只回显 / 只在快照里搬运」的假代码，检查器必须认出孤儿。
+def launch_recovery_errors(files):
+    """启动工具的脚本收尾契约（0.5.3）：CLI 退出后必须回到可用的交互 shell。
+    旧写法 exec <cmd> 会顶替掉 shell，且脚本后面的行永远不执行，收尾不可控。"""
+    shell_lines = files.get("AppShell.swift", [])
+    shell = "\n".join(ln for ln in shell_lines if not ln.strip().startswith("//"))
+    core = "\n".join(files.get("Core.swift", []))
+    errs = []
+    if "buildToolLaunchLine(dir: dir, cmd: tool.cmd)" not in shell:
+        errs.append("AppShell.launchInTerminal 没有走 Core 的 buildToolLaunchLine")
+    if re.search(r'exec\s+\\\((?:tool\.cmd|cmd)\)', shell):
+        errs.append("启动工具又用 exec 顶替了 CLI，退出后只剩死窗口")
+    # 只看函数体本身：Swift 源码里双引号写成 \"，不能拿拼好的命令行字面量去比
+    m = re.search(r'func buildToolLaunchLine[\s\S]*?\n\}', core)
+    body = m.group(0) if m else ""
+    if '${SHELL:-/bin/zsh}' not in body or '-il' not in body:
+        errs.append("Core.buildToolLaunchLine 没有 exec 到交互式 shell")
+    if '; exec' not in body:
+        errs.append("收尾用 && 连接，CLI 失败或被 Ctrl-C 时回不到 shell")
+    return errs
+
+
+# 自检：喂一份「旧 exec 写法」的假代码，检查器必须报错。
 # 否则检查器本身就成了新的假绿（0.5.0 的教训）。
 fake = {
     "AppDelegate.swift": ["    var copyGhostField: NSTextField!"],
@@ -89,6 +110,26 @@ if "copyGhostField" not in fake_orphans:
     print("检查器自检失败：假控件未被识别为孤儿（检查逻辑失效）")
     sys.exit(1)
 
+fake_old_exec = {
+    "AppShell.swift": [
+        "func launchInTerminal(dir: String, tool: ToolConfig) {",
+        '    let cmdLine = "cd ... && clear && exec \\(tool.cmd)"',
+        "    launchCommandInTerminal(cmdLine)",
+        "}",
+    ],
+    "Core.swift": [],
+}
+if not launch_recovery_errors(fake_old_exec):
+    print("检查器自检失败：旧的 exec 收尾未被识别（检查逻辑失效）")
+    sys.exit(1)
+fake_missing_il = {
+    "AppShell.swift": ["    launchCommandInTerminal(buildToolLaunchLine(dir: dir, cmd: tool.cmd))"],
+    "Core.swift": ['    return "cd ... && clear && \\(cmd)"'],
+}
+if not launch_recovery_errors(fake_missing_il):
+    print("检查器自检失败：缺交互 shell 的收尾未被识别（检查逻辑失效）")
+    sys.exit(1)
+
 root = pathlib.Path(sys.argv[1])
 files = {p.name: p.read_text(encoding="utf-8").splitlines()
          for p in sorted((root / "src").glob("*.swift"))}
@@ -101,5 +142,12 @@ if orphans:
     print("以下控件只有创建 / 回显 / 快照搬运，没有任何生产路径读取它的值：")
     for v in orphans:
         print(f"  - {v}（要么接上行为，要么从界面删掉）")
+    sys.exit(1)
+
+recovery_errs = launch_recovery_errors(files)
+print("启动脚本收尾检查：" + ("通过（CLI 退出后回到可用 shell）" if not recovery_errs else "失败"))
+for e in recovery_errs:
+    print(f"  ✗ {e}")
+if recovery_errs:
     sys.exit(1)
 PY

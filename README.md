@@ -47,7 +47,7 @@ xattr -dr com.apple.quarantine "/Applications/AI终端启动器.app"
 
 ## 日常使用
 
-1. 打开「AI终端启动器」，窗口里每个目录一行，点 CLI 名称即在该目录启动。项目多时窗口可滚动、可拉伸。
+1. 打开「AI终端启动器」，窗口里每个目录一行，点 CLI 名称即在该目录启动；退出 CLI 后 Terminal 会回到该目录的交互式 shell，窗口继续可用。项目多时窗口可滚动、可拉伸。
 2. 「其他目录」可选任意文件夹再启动。
 3. 改完 `config.json` 后点「刷新」即可，不必重编译（已填的互拷表单会保留）。
 4. 窗口下方「互拷」：填源/目标路径（本地绝对路径或 `user@host:path`），粘贴连接串后点「解析」（结果补进一个路径框，凭据行只读展示）、从免密联想选主机、逐层浏览远端目录；选项只有保留属性 / 断点续传 / 限速（递归恒定），点「开始拷贝」在 Terminal 看进度。
@@ -73,7 +73,7 @@ xattr -dr com.apple.quarantine "/Applications/AI终端启动器.app"
 | `scripts/package.sh` / `scripts/sign-app.sh` | 打 DMG 与 zip（universal）/ 给 `.app` 签名（Developer ID 或 ad-hoc） |
 | `scripts/install-remote.sh` | 给他人用的一键安装（下载 → 装 → 清 quarantine） |
 | `.github/workflows/ci.yml` / `release.yml` | CI：编译 + 跑测试 / 推 tag 自动打包发布 |
-| `LICENSE` / `CHANGELOG.md` | MIT 许可 / 版本改动记录（当前 0.5.2） |
+| `LICENSE` / `CHANGELOG.md` | MIT 许可 / 版本改动记录（当前 0.5.3） |
 
 ## 测试
 

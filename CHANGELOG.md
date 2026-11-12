@@ -3,6 +3,17 @@
 版本号遵循「主版本.次版本.修订号」，1.0 之前每次成批改动升次版本号。安装包版本以 `src/Info.plist` 的
 `CFBundleShortVersionString` 为准，构建脚本原样拷入 `.app`。
 
+## 0.5.3 — 2026-11-12
+
+启动工具退出 CLI 后不再留下死窗口，终端回到可用 shell。仍按 TDD 先红灯后绿灯。
+
+- **问题**：`launchInTerminal` 生成 `cd … && clear && exec <CLI>`。`exec` 用 CLI 顶替掉 shell，CLI 一退出窗口里只剩一个已结束、不能再输入的会话；而且 exec 之后脚本里的行永远不执行，app 侧无法控制收尾。用户实测「退出 omp 了，我的终端还在」。
+- **红灯**：先写 12 条 Core 断言（命令行不得含 `exec <CLI>`、末尾须 exec 到交互登录 shell、交互 shell 排在 CLI 之后、分号连接保证失败也能回 shell、单引号路径转义、端到端脚本 `zsh -n`），`buildToolLaunchLine` 当时还不存在 → 编译失败。
+- **绿灯**：Core 新增纯函数 `buildToolLaunchLine`（`cd '<目录>' && clear && <CLI>; exec "${SHELL:-/bin/zsh}" -il`），`AppShell.launchInTerminal` 改调它；Terminal 打开 `.command` 时追加的 `; exit;` 再也执行不到，窗口保持可用、工作目录仍是配置目录。CLI 失败或被 Ctrl-C 也能回到 shell。
+- **防复发**：`check-ui-wiring.sh` 增「启动脚本收尾」项（不得再用 exec 顶替 CLI、必须走纯函数、收尾须用分号且 exec 到交互 shell），带两份假代码自检；已做负向验证（故意改回旧写法 → 退出码 1，还原 → 0）。GUI 自测新增真人点击后读磁盘上那份 `.command` 的行为契约；`--no-launch` 时明确记 SKIP，不算 PASS。
+- **验证**：Core 390 → **402 条**全绿；GUI 自测 `解析回填 6/6` + `界面接线 5/5` + `启动脚本收尾 = PASS`；`check-docs.sh` 五项全通过。
+- **文档**：docs/03/04/05/06/08、README、CHANGELOG、Info.plist（0.5.3 / build 17）同步。
+
 ## 0.5.2 — 2026-11-12
 
 界面精简，并把「这类问题怎么不再发生」做成门禁。审查发现 5 个「看得见却没接线」的控件，仍按 TDD 先红灯后绿灯。

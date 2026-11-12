@@ -802,6 +802,17 @@ func buildRelayCopyCommand(params: CopyParams) -> String {
         " | " + dstSSH + " " + shellQuote(stripBrackets(t.host)) + " " + shellQuote(dstCmd)
 }
 
+// —— 启动工具的命令行（纯函数，可测、可 zsh -n 校验）——
+// 启动工具的命令行：cd 到配置目录 → 清屏 → 跑 CLI → 回到该目录的交互式 shell。
+// 不能用 `exec <cmd>`：exec 会用 CLI 顶替掉 shell，CLI 一退出窗口里只剩一个已结束、
+// 不能再输入的会话；而且脚本里写在 exec 后面的行永远不会执行，收尾就完全不可控。
+// 末尾 exec 到交互登录 shell 后，Terminal 打开 .command 时追加的 `; exit;` 再也执行不到，
+// 窗口保持可用，工作目录仍是配置目录。用分号连接：CLI 失败/被 Ctrl-C 也能回到 shell。
+func buildToolLaunchLine(dir: String, cmd: String) -> String {
+    let esc = dir.replacingOccurrences(of: "'", with: "'\\''")
+    return "cd '\(esc)' && clear && \(cmd); exec \"${SHELL:-/bin/zsh}\" -il"
+}
+
 // —— 生成 Terminal 启动脚本（纯函数，便于 zsh -n 语法校验与断言）——
 // autoCloseOnSuccess：成功时按 tty 精确关闭本 tab 所在窗口（匹配不到则不关，避免误关其它窗口）
 // logPath：非空时把「开始/结束 + 退出码」追加进日志；rsync 自身的明细由 --log-file 写同一个文件

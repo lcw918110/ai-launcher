@@ -151,11 +151,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
                 }
             }
         }
-        if let first = buttons.first, !CommandLine.arguments.contains("--no-launch") {
+        let didClickLaunch = buttons.first != nil && !CommandLine.arguments.contains("--no-launch")
+        if let first = buttons.first, didClickLaunch {
             debugLog("[自测] 找到 \(buttons.count) 个启动按钮，模拟点击「\(first.title)」")
             first.performClick(nil)
         } else {
             debugLog("[自测] 找到 \(buttons.count) 个启动按钮（--no-launch：不点击、不弹 Terminal）")
+        }
+
+        // 启动工具收尾：真人点击后读「真正写到磁盘的那份 .command」，而不是调用函数看返回值。
+        // --no-launch 时明确记 SKIP，绝不算 PASS（0.5.0 的假绿就是这么来的）。
+        if !didClickLaunch {
+            debugLog("[WIRING] 启动脚本收尾 = SKIP（--no-launch 未点击启动按钮）")
+        } else {
+            let p = lastCommandScriptPath
+            let text = (try? String(contentsOfFile: p, encoding: .utf8)) ?? ""
+            let uiToolShell = !text.isEmpty && !text.contains(" && exec ") &&
+                text.contains("exec \"${SHELL:-/bin/zsh}\" -il") && text.contains("cd '")
+            debugLog("[WIRING] 启动脚本收尾 = \(uiToolShell ? "PASS" : "FAIL") 脚本=\(p) 长度=\(text.count)")
         }
 
         // 不再用「控件存在 = true」这种假绿断言：控件被创建了不等于接线了。
