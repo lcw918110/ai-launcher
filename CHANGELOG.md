@@ -3,6 +3,18 @@
 版本号遵循「主版本.次版本.修订号」，1.0 之前每次成批改动升次版本号。安装包版本以 `src/Info.plist` 的
 `CFBundleShortVersionString` 为准，构建脚本原样拷入 `.app`。
 
+## 0.5.8 — 2026-11-17
+
+新功能：每工具启动上下文（`args` / `env`）。需求是「omp 启动用某个模型、走本地代理」，落地时抽象成通用能力——启动器不知道「模型 / 代理」是什么，只知道启动这个工具要追加哪些参数、注入哪些环境变量；具体值全在 `config.json`。仍按 TDD 先红灯后绿灯。
+
+- **`ToolConfig` 增两个可选字段**：`args`（追加到命令后的参数数组）、`env`（启动前 export 的环境变量对象）。不写则行为与旧版逐字一致，老工具零影响。
+- **Core 纯函数**：`shellArg`（安全字符裸写、其余走 `shellQuote`）、`buildEnvExportLine`（按 key 排序 + shell 转义 + `[A-Za-z_][A-Za-z0-9_]*` 变量名校验防注入）、`buildToolLaunchLine(dir:cmd:args:env:)`（env 在 `clear` 前、args 在命令后分号前）。`loadConfig` 两个分支都解析新字段。
+- **配置示例**：`config.example.json` 的 omp 给出「固定模型 + 本地代理」示例（`--model` + `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`，地址占位 `http://127.0.0.1:8000/v1`），按实际端口改；HTTP/SOCKS 代理把键换成 `HTTP_PROXY` / `HTTPS_PROXY`。用户当前 config.json 未配这两项（程序只读不回写），需在自己的配置里填值才生效。
+- **UI 传参**：按钮改用 `ToolLaunchButton` 子类携带完整 `ToolConfig`（NSButton 无 `representedObject`），点击时从按钮取回，identifier 三段格式不变（GUI 自测靠它扫按钮）。
+- **防回退**：`check-ui-wiring.sh` 加第 6 项「启动上下文接线」（args/env 从配置到启动行全程接线，带假代码自检）；GUI 自测加「接线」（按钮携带值与配置一致）与「端到端」断言（落盘脚本真含注入值，配置未配记 N/A 不算 PASS）。临时给配置注入、`--selftest` 验证落盘脚本为 `… && export OPENAI_BASE_URL='…' && clear && omp --model …; exec …`，验后已恢复用户原配置。
+- **验证**：红灯 —— 新函数/字段/签名不存在（编译失败）。绿灯 —— Core **488 条**全绿（465 → 488）；GUI 自测 7 组全 PASS、0 FAIL；`test.sh` / `check-ui-wiring.sh`（6 项）/ `check-docs.sh` / `sync-config-example.sh --check` 全过。
+- **文档**：docs/02、03、04、05、06、README、08、CHANGELOG、Info.plist（0.5.8 / build 22）同步。
+
 ## 0.5.7 — 2026-11-12
 
 技术债第二轮：清掉「文档说一套、程序做另一套」和几处「每次都多花一份力气」的地方。**不改界面行为**，仍按 TDD 先红灯后绿灯。

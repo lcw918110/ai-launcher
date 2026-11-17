@@ -75,8 +75,8 @@ def launch_recovery_errors(files):
     shell = "\n".join(ln for ln in shell_lines if not ln.strip().startswith("//"))
     core = "\n".join(files.get("Core.swift", []))
     errs = []
-    if "buildToolLaunchLine(dir: dir, cmd: tool.cmd)" not in shell:
-        errs.append("AppShell.launchInTerminal 没有走 Core 的 buildToolLaunchLine")
+    if "buildToolLaunchLine(dir: dir, cmd: tool.cmd, args: tool.args, env: tool.env)" not in shell:
+        errs.append("AppShell.launchInTerminal 没有把 args/env 传给 Core 的 buildToolLaunchLine")
     if re.search(r'exec\s+\\\((?:tool\.cmd|cmd)\)', shell):
         errs.append("启动工具又用 exec 顶替了 CLI，退出后只剩死窗口")
     # 只看函数体本身：Swift 源码里双引号写成 \"，不能拿拼好的命令行字面量去比
@@ -154,6 +154,39 @@ def launch_evidence_errors(files):
     runner = "\n".join(files.get("CopyRunner.swift", []))
     if "===== " in runner:
         errs.append("CopyRunner 又手拼了横幅，应走 Core 的 buildCopyScriptLine")
+    return errs
+
+
+def launch_context_errors(files):
+    """每工具启动上下文（0.5.8）：args/env 必须从配置解析 → 界面按钮 → Core 拼装全程接线。
+    任何一环退化成「只配了不用」，告警就红——防止新功能变成第二个密码框。"""
+    core = "\n".join(files.get("Core.swift", []))
+    shell = "\n".join(files.get("AppShell.swift", []))
+    app = "\n".join(files.get("AppDelegate.swift", []))
+    errs = []
+    # 1) Core：ToolConfig 必须有两个字段，拼接函数必须消费它们
+    m = re.search(r'struct ToolConfig\s*\{[\s\S]*?\n\}', core)
+    struct_body = m.group(0) if m else ""
+    if "args:" not in struct_body or "env:" not in struct_body:
+        errs.append("ToolConfig 缺少 args/env 字段")
+    m = re.search(r'func buildToolLaunchLine[\s\S]*?\n\}', core)
+    body = m.group(0) if m else ""
+    if "args" not in body or "buildEnvExportLine" not in body:
+        errs.append("buildToolLaunchLine 没有消费 args/env（配了也不进启动行）")
+    if "func buildEnvExportLine" not in core:
+        errs.append("Core 缺少 buildEnvExportLine（环境变量拼装无法单测）")
+    # 2) loadConfig 两个分支（缺省回退 + 真实文件）都要解析新字段
+    if core.count("args: dict[\"args\"]") < 2 or core.count("env: dict[\"env\"]") < 2:
+        errs.append("loadConfig 没有在缺省回退与文件读取两处都解析 args/env")
+    # 3) UI：按钮必须携带完整 ToolConfig，点击时从按钮取出（不是只取 cmd 重建）
+    if "class ToolLaunchButton" not in app and "class ToolLaunchButton" not in shell:
+        errs.append("没有 ToolLaunchButton 承载 args/env（NSButton 无 representedObject）")
+    if "b.tool = tool" not in app and "button.tool = tool" not in app:
+        errs.append("构建启动按钮时没把 ToolConfig 挂到按钮上")
+    if "as? ToolLaunchButton)?.tool" not in app:
+        errs.append("点击启动按钮时没从按钮取回 args/env")
+    if "ToolConfig(name: cmd, cmd: cmd)" in app:
+        errs.append("点击启动仍用 name/cmd 重建 ToolConfig，会丢掉 args/env")
     return errs
 
 
@@ -251,6 +284,23 @@ if not any("buildCopyScriptLine" in e for e in launch_evidence_errors(fake_hand_
     print("检查器自检失败：CopyRunner 手拼横幅未被识别")
     sys.exit(1)
 
+fake_ctx_drop = {
+    "Core.swift": [
+        "struct ToolConfig { let name: String; let cmd: String }",
+        "func buildToolLaunchLine(dir: String, cmd: String) -> String { return \"cd \\(dir) && \\(cmd)\" }",
+        "func loadConfig() { ToolConfig(name: n, cmd: c) }",
+        "func loadConfig() { ToolConfig(name: n, cmd: c) }",
+    ],
+    "AppShell.swift": [],
+    "AppDelegate.swift": [
+        "let b = NSButton(title: tool.name, ...)",
+        "launchToolInTerminal(dir: dir, cmd: parts[2])",
+    ],
+}
+if not launch_context_errors(fake_ctx_drop):
+    print("检查器自检失败：args/env 被丢弃的写法未被识别")
+    sys.exit(1)
+
 root = pathlib.Path(sys.argv[1])
 files = {p.name: p.read_text(encoding="utf-8").splitlines()
          for p in sorted((root / "src").glob("*.swift"))}
@@ -291,5 +341,12 @@ print("启动实证：" + ("通过（有标记文件、没人只看 open 返回�
 for e in evidence_errs:
     print(f"  ✗ {e}")
 if evidence_errs:
+    sys.exit(1)
+
+ctx_errs = launch_context_errors(files)
+print("启动上下文接线：" + ("通过（args/env 从配置到启动行全程接线）" if not ctx_errs else "失败"))
+for e in ctx_errs:
+    print(f"  ✗ {e}")
+if ctx_errs:
     sys.exit(1)
 PY

@@ -172,6 +172,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             debugLog("[自测] 找到 \(buttons.count) 个启动按钮（--no-launch：不点击、不弹 Terminal）")
         }
 
+        // 0.5.8 启动上下文接线：每个启动按钮必须携带「配置解析出的完整 ToolConfig」（含 args/env）。
+        // 读的是生产代码用 config.json 构建的按钮对象，不是手设状态变量——若构建按钮时漏传 args/env，
+        // 或参数在 UI 层被丢弃，这里就红。args/env → 启动行的拼装由 Core 单测（第 38 组）覆盖。
+        let parsedTools = loadConfig().tools
+        var ctxWiringOK = !buttons.isEmpty
+        var ctxWiringDetail: [String] = []
+        for b in buttons {
+            guard let tb = b as? ToolLaunchButton, let carried = tb.tool else {
+                ctxWiringOK = false
+                ctxWiringDetail.append("\(b.title):按钮未携带 ToolConfig")
+                continue
+            }
+            guard let cfg = parsedTools.first(where: { $0.cmd == carried.cmd }) else {
+                ctxWiringOK = false
+                ctxWiringDetail.append("\(b.title):配置中找不到对应工具")
+                continue
+            }
+            if carried.args != cfg.args || carried.env != cfg.env {
+                ctxWiringOK = false
+                ctxWiringDetail.append("\(b.title):args/env 与配置不一致")
+            }
+        }
+        debugLog("[WIRING] 启动上下文接线 = \(ctxWiringOK ? "PASS" : "FAIL") 按钮=\(buttons.count) "
+                 + "详情=\(ctxWiringDetail.isEmpty ? "全部一致" : ctxWiringDetail.joined(separator: "；"))")
+
         // 启动工具收尾：真人点击后读「真正写到磁盘的那份 .command」，而不是调用函数看返回值。
         // --no-launch 时明确记 SKIP，绝不算 PASS（0.5.0 的假绿就是这么来的）。
         if !didClickLaunch {
@@ -202,6 +227,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
                 let clip = NSPasteboard.general.string(forType: .string) ?? ""
                 let ok = notice.contains("没跑起来") && clip == p && !notice.contains("已交给 Terminal")
                 debugLog("[TDD] 启动实证 = 文稿没被交给终端（本机实例在受限环境里）→ 兜底 \(ok ? "PASS" : "FAIL") 剪贴板=\(clip)")
+            }
+
+            // 0.5.8 端到端：若配置里给某个工具配了 args/env，真人点击它，读落盘脚本验证注入值真的到位。
+            // 没配就记 N/A（不算 PASS）——避免「没东西可测」被当成「测过了」。
+            let ctxBtn = buttons.first { b in
+                guard let t = (b as? ToolLaunchButton)?.tool else { return false }
+                return !t.args.isEmpty || !t.env.isEmpty
+            }
+            if let b = ctxBtn, let tool = (b as? ToolLaunchButton)?.tool {
+                click(b)
+                let p2 = lastLaunchReport?.scriptPath ?? ""
+                let t2 = (try? String(contentsOfFile: p2, encoding: .utf8)) ?? ""
+                var missing: [String] = []
+                for a in tool.args where !t2.contains(shellArg(a)) { missing.append("参数 \(a)") }
+                for (k, v) in tool.env where !t2.contains("export \(k)=\(shellQuote(v))") {
+                    missing.append("变量 \(k)")
+                }
+                let ok = missing.isEmpty
+                debugLog("[WIRING] 启动上下文端到端 = \(ok ? "PASS" : "FAIL") 工具=\(tool.name) "
+                         + "缺失=\(missing.isEmpty ? "无" : missing.joined(separator: "、")) 脚本=\(p2)")
+            } else {
+                debugLog("[WIRING] 启动上下文端到端 = N/A（当前配置未给任何工具配 args/env，无注入可验；"
+                         + "Core 第 38 组已覆盖拼装逻辑）")
             }
         }
 
@@ -531,10 +579,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
             label.font = NSFont.systemFont(ofSize: 13, weight: .medium)
             row.addView(label, in: .leading)
             for tool in tools {
-                let b = NSButton(title: tool.name, target: self, action: #selector(launchTool(_:)))
+                let b = ToolLaunchButton(title: tool.name, target: self, action: #selector(launchTool(_:)))
                 b.bezelStyle = .rounded
                 b.controlSize = .small
                 b.identifier = NSUserInterfaceItemIdentifier("launch\u{1}\(dir)\u{1}\(tool.cmd)")
+                // args/env 随按钮携带；identifier 保持三段格式（GUI 自测靠它扫启动按钮）
+                b.tool = tool
                 row.addView(b, in: .trailing)
             }
             row.setHuggingPriority(.defaultHigh, for: .horizontal)
@@ -548,7 +598,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
         let popup = NSPopUpButton()
         for tool in tools {
             popup.addItem(withTitle: tool.name)
-            popup.lastItem?.representedObject = tool.cmd
+            popup.lastItem?.representedObject = tool
         }
         toolPopup = popup
         let otherLabel = NSTextField(labelWithString: "📂 其他目录")
@@ -647,8 +697,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
     // 启动工具一律走这里：open 之后还要盯住「脚本到底有没有跑起来」。
     // 沙箱/门禁会静默拦下文稿交接（open 仍返回 0），只靠返回值就会「看起来成功、实际什么都没发生」，
     // 用户那边只看到一个看不懂的系统弹窗 —— 所以没跑起来时要由我们自己说清并给出可走的路（0.5.5）。
-    private func launchToolInTerminal(dir: String, cmd: String) {
-        let report = launchInTerminal(dir: dir, tool: ToolConfig(name: cmd, cmd: cmd))
+    private func launchToolInTerminal(dir: String, tool: ToolConfig) {
+        let report = launchInTerminal(dir: dir, tool: tool)
         lastLaunchReport = report
         guard report.openSubmitted else {
             // 连提交都没成功（文件写不出来 / 没有能打开它的程序）：同步就能知道，别等标记超时
@@ -668,16 +718,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegate {
               id.hasPrefix("launch\u{1}") else { return }
         let parts = id.components(separatedBy: "\u{1}")
         guard parts.count == 3 else { return }
-        let dir = parts[1], cmd = parts[2]
-        launchToolInTerminal(dir: dir, cmd: cmd)
+        let dir = parts[1]
+        // 工具从按钮携带的 ToolConfig 取（含 args/env）；缺失时退回一个只有 name/cmd 的最小 ToolConfig
+        let tool = (sender as? ToolLaunchButton)?.tool
+            ?? ToolConfig(name: parts[2], cmd: parts[2])
+        launchToolInTerminal(dir: dir, tool: tool)
     }
 
     @objc func otherDirLaunch(_ sender: Any) {
         debugLog("其他目录启动点击")
         guard let item = toolPopup.selectedItem,
-              let cmd = item.representedObject as? String else { return }
+              let tool = item.representedObject as? ToolConfig else { return }
         if let dir = pickOtherDir() {
-            launchToolInTerminal(dir: dir, cmd: cmd)
+            launchToolInTerminal(dir: dir, tool: tool)
         }
     }
 

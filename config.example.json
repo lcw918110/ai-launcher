@@ -10,7 +10,15 @@
     },
     {
       "name": "omp（Oh My Pi）",
-      "cmd": "omp"
+      "cmd": "omp",
+      "args": [
+        "--model",
+        "mistral/deepseek-v4-1-flash-1017:max"
+      ],
+      "env": {
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:8000/v1",
+        "OPENAI_BASE_URL": "http://127.0.0.1:8000/v1"
+      }
     }
   ],
   "pathPrepend": [

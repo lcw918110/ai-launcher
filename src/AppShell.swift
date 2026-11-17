@@ -7,13 +7,21 @@ final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
+// 启动按钮携带完整 ToolConfig（含 args/env）。NSButton 没有 representedObject（那是 NSMenuItem 的），
+// 用子类带一个属性，让配置随按钮走，不引入全局状态；GUI 自测的 `as NSButton` 仍能匹配到它。
+final class ToolLaunchButton: NSButton {
+    var tool: ToolConfig?
+}
+
 
 // 免授权启动：写临时 .command 文件并 open，Terminal 新窗口执行
 @discardableResult
 func launchInTerminal(dir: String, tool: ToolConfig) -> LaunchReport {
-    debugLog("launchInTerminal dir=\(dir) cmd=\(tool.cmd)")
-    // 收尾逻辑在 Core 纯函数里（可测、可 zsh -n 校验）：退出 CLI 后回到可用 shell
-    return launchCommandInTerminal(buildToolLaunchLine(dir: dir, cmd: tool.cmd))
+    debugLog("launchInTerminal dir=\(dir) cmd=\(tool.cmd) args=\(tool.args) envKeys=\(tool.env.keys.sorted())")
+    // 收尾逻辑在 Core 纯函数里（可测、可 zsh -n 校验）：退出 CLI 后回到可用 shell。
+    // args/env 随 ToolConfig 一起从配置流到这里，由纯函数拼装；老工具两字段为空 → 行为不变。
+    let line = buildToolLaunchLine(dir: dir, cmd: tool.cmd, args: tool.args, env: tool.env)
+    return launchCommandInTerminal(line)
 }
 
 // 兜底：把脚本路径放进剪贴板，并返回一段能直接显示的话。

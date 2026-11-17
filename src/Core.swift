@@ -11,6 +11,10 @@ let defaultPathPrepend: [String] = ["~/.bun/bin", "/opt/homebrew/bin", "/usr/loc
 struct ToolConfig {
     let name: String   // 菜单显示名
     let cmd: String    // 实际执行的命令
+    // 每工具启动上下文：启动器不知道「模型/代理」是什么，只知道要追加哪些参数、注入哪些环境变量。
+    // 具体值全在 config.json 里（见 config.example.json 的 omp 条目）。老工具不写这两项 → 空值 → 行为不变。
+    var args: [String] = []              // 追加到 cmd 之后的参数（如 --model xxx）
+    var env: [String: String] = [:]      // 启动前 export 的环境变量（如本地代理地址）
 }
 
 // —— 互拷（两台机器之间拷贝文件/文件夹）——
@@ -201,6 +205,35 @@ func buildHostSpec(_ info: ConnectionInfo) -> String {
 // 单引号转义：把任意字符串安全地包进单引号（复用 '\'' 手法）
 func shellQuote(_ s: String) -> String {
     "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
+// 命令行参数转义：只含「安全字符」的参数保持裸写（--model、模型名、URL 都可读可复盘），
+// 其余（空格、引号、$、;、通配符等）才走 shellQuote。安全集刻意保守：
+// 字母数字 + _@%+=:,./- —— 这些在 zsh 里都不会被当成控制符或做通配展开。
+private let shellArgSafe = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-")
+func shellArg(_ s: String) -> String {
+    if !s.isEmpty && s.unicodeScalars.allSatisfy({ shellArgSafe.contains(Character(UnicodeScalar($0))) }) {
+        return s
+    }
+    return shellQuote(s)
+}
+
+// 环境变量名合法性：shell 变量名只能是 [A-Za-z_][A-Za-z0-9_]*。
+// 非法键直接丢弃——配置是手写文件，挡住 `A B=...` 这类注入比让它进启动行更重要。
+private func validEnvKey(_ k: String) -> Bool {
+    guard let first = k.unicodeScalars.first else { return false }
+    let head = CharacterSet.letters.union(CharacterSet(charactersIn: "_"))
+    let tail = head.union(CharacterSet.decimalDigits)
+    guard head.contains(first) else { return false }
+    return k.unicodeScalars.dropFirst().allSatisfy { tail.contains($0) }
+}
+
+// 把 env 字典拼成 `export K='V' && export K2='V2'`；按 key 排序保证同一份配置生成同一行（可断言、可复盘）。
+func buildEnvExportLine(_ env: [String: String]) -> String {
+    env.keys.sorted()
+        .filter { validEnvKey($0) }
+        .map { "export \($0)=\(shellQuote(env[$0] ?? ""))" }
+        .joined(separator: " && ")
 }
 
 // 远端 shell 的路径参数：单引号内的 ~ 不会被展开（ls '~' 会去找字面名为 ~ 的文件），
@@ -971,9 +1004,14 @@ func buildCopyScriptLine(banner: String, prefix: String = "", cmd: String) -> St
 // 不能再输入的会话；而且脚本里写在 exec 后面的行永远不会执行，收尾就完全不可控。
 // 末尾 exec 到交互登录 shell 后，Terminal 打开 .command 时追加的 `; exit;` 再也执行不到，
 // 窗口保持可用，工作目录仍是配置目录。用分号连接：CLI 失败/被 Ctrl-C 也能回到 shell。
-func buildToolLaunchLine(dir: String, cmd: String) -> String {
+func buildToolLaunchLine(dir: String, cmd: String, args: [String] = [], env: [String: String] = [:]) -> String {
     let esc = dir.replacingOccurrences(of: "'", with: "'\\''")
-    return "cd '\(esc)' && clear && \(cmd); exec \"${SHELL:-/bin/zsh}\" -il"
+    // env 在 cd 之后、clear 之前注入：cd 失败就不注入，清屏后用户看到的第一屏就是工具输出。
+    let envPart = buildEnvExportLine(env)
+    let chain = "cd '\(esc)'" + (envPart.isEmpty ? "" : " && " + envPart) + " && clear && " + cmd
+    // args 追加在命令之后、分号之前；空数组时这一串为空，输出与旧版逐字一致。
+    let argsPart = args.isEmpty ? "" : " " + args.map { shellArg($0) }.joined(separator: " ")
+    return chain + argsPart + "; exec \"${SHELL:-/bin/zsh}\" -il"
 }
 
 // —— 生成 Terminal 启动脚本（纯函数，便于 zsh -n 语法校验与断言）——
@@ -1057,7 +1095,13 @@ func defaultConfigJSON() -> [String: Any] {
         ],
         "tools": [
             ["name": "opencode", "cmd": "opencode"],
-            ["name": "omp（Oh My Pi）", "cmd": "omp"],
+            // 启动上下文示例：模型走 --model（omp 官方入口），代理走 OpenAI 兼容网关的环境变量。
+            // 地址是本机网关占位（omp 官方文档示例端口 8000），按你本地代理的实际端口改；
+            // 若你的代理是 HTTP/SOCKS 网络代理，把 env 的键换成 HTTP_PROXY / HTTPS_PROXY 即可。
+            ["name": "omp（Oh My Pi）", "cmd": "omp",
+             "args": ["--model", "mistral/deepseek-v4-1-flash-1017:max"],
+             "env": ["OPENAI_BASE_URL": "http://127.0.0.1:8000/v1",
+                     "ANTHROPIC_BASE_URL": "http://127.0.0.1:8000/v1"]],
         ],
         "pathPrepend": defaultPathPrepend,
         "copy": [
@@ -1083,9 +1127,11 @@ func loadConfig(path: String = configPath) -> (dirs: [String], tools: [ToolConfi
         let d = defaultConfigJSON()
         let dirs = d["dirs"] as? [String] ?? []
         let tools = (d["tools"] as? [Any] ?? []).compactMap { item -> ToolConfig? in
-            guard let dict = item as? [String: String],
-                  let name = dict["name"], let cmd = dict["cmd"] else { return nil }
-            return ToolConfig(name: name, cmd: cmd)
+            guard let dict = item as? [String: Any],
+                  let name = dict["name"] as? String, let cmd = dict["cmd"] as? String else { return nil }
+            return ToolConfig(name: name, cmd: cmd,
+                              args: dict["args"] as? [String] ?? [],
+                              env: dict["env"] as? [String: String] ?? [:])
         }
         return (dirs, tools)
     }
@@ -1093,7 +1139,9 @@ func loadConfig(path: String = configPath) -> (dirs: [String], tools: [ToolConfi
     let tools = (json["tools"] as? [Any] ?? []).compactMap { item -> ToolConfig? in
         guard let dict = item as? [String: Any],
               let name = dict["name"] as? String, let cmd = dict["cmd"] as? String else { return nil }
-        return ToolConfig(name: name, cmd: cmd)
+        return ToolConfig(name: name, cmd: cmd,
+                          args: dict["args"] as? [String] ?? [],
+                          env: dict["env"] as? [String: String] ?? [:])
     }
     return (dirs, tools)
 }

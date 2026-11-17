@@ -1396,10 +1396,18 @@ let exampleObj = (try? JSONSerialization.jsonObject(with: exampleData)) as? [Str
 let defaultObj = defaultConfigJSON()
 expectEqual(Set(exampleObj.keys), Set(defaultObj.keys), "示例配置: 顶层 key 与代码默认值一致")
 func toolLines(_ obj: [String: Any]) -> [String] {
-    (obj["tools"] as? [[String: String]] ?? []).map { "\($0["name"] ?? "")|\($0["cmd"] ?? "")" }
+    guard let tools = obj["tools"] as? [[String: Any]] else { return ["<tools 转型失败>"] }
+    return tools.map { t in
+        let name = t["name"] as? String ?? ""
+        let cmd = t["cmd"] as? String ?? ""
+        let args = (t["args"] as? [String] ?? []).joined(separator: ",")
+        let env = (t["env"] as? [String: String] ?? [:])
+            .map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ",")
+        return "\(name)|\(cmd)|\(args)|\(env)"
+    }
 }
 expectEqual(toolLines(exampleObj), toolLines(defaultObj),
-            "示例配置: 工具清单与默认值一致（文档与首启写出的文件不能两套）")
+            "示例配置: 工具清单（含 args/env）与默认值一致（文档与首启写出的文件不能两套）")
 expectEqual(exampleObj["pathPrepend"] as? [String] ?? [], defaultObj["pathPrepend"] as? [String] ?? [],
             "示例配置: pathPrepend 与默认值一致")
 expectEqual(exampleObj["dirs"] as? [String] ?? [], defaultObj["dirs"] as? [String] ?? [],
@@ -1429,6 +1437,84 @@ expectTrue(currentLog.contains("only-this-line") && !currentLog.contains("012345
            "日志轮转: 新文件只含轮转之后的内容")
 try? FileManager.default.removeItem(atPath: tmpLog)
 try? FileManager.default.removeItem(atPath: rotatedLogPath(tmpLog))
+
+// ============================================================
+// 38. 每工具启动上下文：args（追加参数）+ env（注入环境变量）（0.5.8）
+// 需求：omp 启动要用某个模型、走本地代理。抽象成通用能力——启动器不知道「模型/代理」
+// 是什么，只知道「启动这个工具时要追加哪些参数、注入哪些环境变量」。具体值全在配置里。
+// 约束：老工具没有这两个字段时，启动行必须与旧版逐字相同（向后兼容）。
+// ============================================================
+print("")
+section("38. 每工具启动上下文 args + env（0.5.8）")
+
+// —— shellArg：安全参数裸写、含特殊字符才加引号 ——
+expectEqual(shellArg("--model"), "--model", "启动上下文: shellArg 安全参数裸写（可读可复盘）")
+expectEqual(shellArg("mistral/deepseek-v4-1-flash-1017:max"), "mistral/deepseek-v4-1-flash-1017:max",
+            "启动上下文: shellArg 模型名含 / : - 仍裸写")
+expectEqual(shellArg("a b"), "'a b'", "启动上下文: shellArg 含空格加引号")
+expectEqual(shellArg("a'b"), "'a'\\''b'", "启动上下文: shellArg 含单引号正确转义")
+expectEqual(shellArg(""), "''", "启动上下文: shellArg 空串加引号")
+
+// —— buildEnvExportLine：确定性排序 + 变量名校验 + shell 转义 ——
+expectEqual(buildEnvExportLine([:]), "", "启动上下文: 空 env 不产生导出行")
+expectEqual(buildEnvExportLine(["OPENAI_BASE_URL": "http://127.0.0.1:8000/v1"]),
+            "export OPENAI_BASE_URL='http://127.0.0.1:8000/v1'", "启动上下文: 单变量")
+expectEqual(buildEnvExportLine(["Z_LAST": "z", "A_FIRST": "a"]),
+            "export A_FIRST='a' && export Z_LAST='z'", "启动上下文: 多变量按键排序（启动行确定性）")
+expectEqual(buildEnvExportLine(["BAD KEY": "x", "9BAD": "y", "GOOD": "z"]),
+            "export GOOD='z'", "启动上下文: 非法变量名被跳过（防 shell 注入）")
+expectEqual(buildEnvExportLine(["Q": "a'b"]), "export Q='a'\\''b'",
+            "启动上下文: 变量值含单引号正确转义")
+
+// —— buildToolLaunchLine：向后兼容 + args/env 拼接 ——
+expectEqual(buildToolLaunchLine(dir: "/a", cmd: "omp"),
+            "cd '/a' && clear && omp; exec \"${SHELL:-/bin/zsh}\" -il",
+            "启动上下文: 无 args/env 时启动行与旧版逐字一致")
+expectEqual(buildToolLaunchLine(dir: "/a", cmd: "omp", args: ["--model", "mistral/foo:max"]),
+            "cd '/a' && clear && omp --model mistral/foo:max; exec \"${SHELL:-/bin/zsh}\" -il",
+            "启动上下文: args 追加在命令后、分号前")
+expectEqual(buildToolLaunchLine(dir: "/a", cmd: "omp", args: ["--x", "a b"]),
+            "cd '/a' && clear && omp --x 'a b'; exec \"${SHELL:-/bin/zsh}\" -il",
+            "启动上下文: args 含空格走 shellArg 加引号")
+let ctxLine = buildToolLaunchLine(dir: "/a", cmd: "omp",
+                                  args: ["--model", "mistral/foo:max"],
+                                  env: ["OPENAI_BASE_URL": "http://127.0.0.1:8000/v1",
+                                        "ANTHROPIC_BASE_URL": "http://127.0.0.1:8000/v1"])
+expectTrue(ctxLine.contains("cd '/a' && export ANTHROPIC_BASE_URL='http://127.0.0.1:8000/v1' "
+                            + "&& export OPENAI_BASE_URL='http://127.0.0.1:8000/v1' && clear && omp --model"),
+           "启动上下文: env 导出排在 clear 前、args 排在命令后，且顺序确定")
+expectTrue(zshSyntaxOK(buildCommandScript(cmdLine: ctxLine, pathPrepend: [], autoCloseOnSuccess: false)),
+           "启动上下文: 注入后的启动行放进脚本 zsh -n 通过")
+
+// —— loadConfig 解析 args/env（含老配置缺字段的兼容）——
+let ctxPath = tmpDir + "/ctx.json"
+let ctxJSON = """
+{
+  "dirs": ["/d"],
+  "tools": [
+    {"name": "omp代理", "cmd": "omp", "args": ["--model", "mistral/foo:max"],
+     "env": {"OPENAI_BASE_URL": "http://127.0.0.1:8000/v1"}},
+    {"name": "老工具", "cmd": "opencode"}
+  ]
+}
+"""
+try? ctxJSON.write(toFile: ctxPath, atomically: true, encoding: .utf8)
+let lcCtx = loadConfig(path: ctxPath)
+expectEqual(lcCtx.tools.count, 2, "启动上下文: loadConfig 解析工具数")
+expectEqual(lcCtx.tools[0].args, ["--model", "mistral/foo:max"], "启动上下文: loadConfig 解析 args")
+expectEqual(lcCtx.tools[0].env["OPENAI_BASE_URL"], "http://127.0.0.1:8000/v1",
+            "启动上下文: loadConfig 解析 env")
+expectEqual(lcCtx.tools[1].args, [], "启动上下文: 老工具 args 缺省为空")
+expectEqual(lcCtx.tools[1].env, [:], "启动上下文: 老工具 env 缺省为空")
+
+// —— defaultConfigJSON 的 omp 带可用示例 ——
+let ompEntry = (defaultObj["tools"] as? [[String: Any]] ?? []).first { ($0["cmd"] as? String) == "omp" }
+expectTrue(ompEntry?["args"] as? [String] == ["--model", "mistral/deepseek-v4-1-flash-1017:max"],
+           "启动上下文: 默认配置给 omp 配好 --model 参数")
+expectTrue(((ompEntry?["env"] as? [String: String])?["OPENAI_BASE_URL"] ?? "").hasPrefix("http://127.0.0.1:"),
+           "启动上下文: 默认配置给 omp 配好本地代理地址占位")
+expectTrue(!defaultStr.contains("sk-") && !defaultStr.contains("apiKey"),
+           "启动上下文: 默认配置不含任何密钥/明文凭据")
 
 // ============================================================
 // 汇总
