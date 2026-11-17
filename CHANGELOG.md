@@ -3,6 +3,16 @@
 版本号遵循「主版本.次版本.修订号」，1.0 之前每次成批改动升次版本号。安装包版本以 `src/Info.plist` 的
 `CFBundleShortVersionString` 为准，构建脚本原样拷入 `.app`。
 
+## 0.5.9 — 2026-11-17
+
+修正 0.5.8 的默认代理配置：上一版给 omp 示例配的 `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` 经实测对 omp **完全无效**，改成走本机 Clash 的标准网络代理变量。按 TDD 先红灯后绿灯。
+
+- **实测推翻旧方案**：omp 二进制里根本没有 `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL`（只有 `PI_*` / `HTTP_PROXY` / `HTTPS_PROXY`）；本机也不存在 8000 端口的网关。omp 走本地靠的是 `--model ollama/xxx`（直连 11434，无需 env），而 omp 自己的编码提示词约 9K token 顶爆本机模型 8K context，本地模型路线实测跑不通。用户确认「本地」指 Clash 网络代理。
+- **默认配置改为 Clash 代理**：`defaultConfigJSON()` 与 `config.example.json` 的 omp 条目 env 改为 `HTTP_PROXY` / `HTTPS_PROXY` = `http://127.0.0.1:7890`（Clash mixed-port，`curl -x` 实测返回 200）；`--model` 保持 `mistral/deepseek-v4-1-flash-1017:max`（与用户 omp `config.yml` 的 default 一致）。无密钥、无明文凭据。
+- **本机配置同步**：`~/.config/ai-launcher/config.json` 的 omp 条目补上同一组 args/env（改前备份 `config.json.bak.20261117`），程序只读不回写，手工改后点「刷新」生效。
+- **验证**：红灯 —— 3 条新断言（默认 omp 必须有 HTTP_PROXY / HTTPS_PROXY，且不得再有网关变量）全 FAIL。绿灯 —— Core **490 条**全绿（487 → 490）；GUI 自测端到端 PASS（真实配置、真人点击，落盘脚本含两个 `export` 与 `--model`，`zsh -n` 通过）；本机 omp 默认远程模型挂代理后超时属 omp 自身端点问题（不在 launcher 职责内，用户手跑 omp 同样配置）。
+- **文档**：docs/02、03、04、05、06、README、08、CHANGELOG、Info.plist（0.5.9 / build 23）同步。
+
 ## 0.5.8 — 2026-11-17
 
 新功能：每工具启动上下文（`args` / `env`）。需求是「omp 启动用某个模型、走本地代理」，落地时抽象成通用能力——启动器不知道「模型 / 代理」是什么，只知道启动这个工具要追加哪些参数、注入哪些环境变量；具体值全在 `config.json`。仍按 TDD 先红灯后绿灯。

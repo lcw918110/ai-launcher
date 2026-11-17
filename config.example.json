@@ -16,8 +16,8 @@
         "mistral/deepseek-v4-1-flash-1017:max"
       ],
       "env": {
-        "ANTHROPIC_BASE_URL": "http://127.0.0.1:8000/v1",
-        "OPENAI_BASE_URL": "http://127.0.0.1:8000/v1"
+        "HTTP_PROXY": "http://127.0.0.1:7890",
+        "HTTPS_PROXY": "http://127.0.0.1:7890"
       }
     }
   ],

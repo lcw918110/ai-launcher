@@ -1457,8 +1457,8 @@ expectEqual(shellArg(""), "''", "启动上下文: shellArg 空串加引号")
 
 // —— buildEnvExportLine：确定性排序 + 变量名校验 + shell 转义 ——
 expectEqual(buildEnvExportLine([:]), "", "启动上下文: 空 env 不产生导出行")
-expectEqual(buildEnvExportLine(["OPENAI_BASE_URL": "http://127.0.0.1:8000/v1"]),
-            "export OPENAI_BASE_URL='http://127.0.0.1:8000/v1'", "启动上下文: 单变量")
+expectEqual(buildEnvExportLine(["API_BASE_URL": "http://127.0.0.1:8000/v1"]),
+            "export API_BASE_URL='http://127.0.0.1:8000/v1'", "启动上下文: 单变量")
 expectEqual(buildEnvExportLine(["Z_LAST": "z", "A_FIRST": "a"]),
             "export A_FIRST='a' && export Z_LAST='z'", "启动上下文: 多变量按键排序（启动行确定性）")
 expectEqual(buildEnvExportLine(["BAD KEY": "x", "9BAD": "y", "GOOD": "z"]),
@@ -1478,10 +1478,10 @@ expectEqual(buildToolLaunchLine(dir: "/a", cmd: "omp", args: ["--x", "a b"]),
             "启动上下文: args 含空格走 shellArg 加引号")
 let ctxLine = buildToolLaunchLine(dir: "/a", cmd: "omp",
                                   args: ["--model", "mistral/foo:max"],
-                                  env: ["OPENAI_BASE_URL": "http://127.0.0.1:8000/v1",
-                                        "ANTHROPIC_BASE_URL": "http://127.0.0.1:8000/v1"])
-expectTrue(ctxLine.contains("cd '/a' && export ANTHROPIC_BASE_URL='http://127.0.0.1:8000/v1' "
-                            + "&& export OPENAI_BASE_URL='http://127.0.0.1:8000/v1' && clear && omp --model"),
+                                  env: ["API_BASE_URL": "http://127.0.0.1:8000/v1",
+                                        "Z_OTHER_URL": "http://127.0.0.1:8000/v1"])
+expectTrue(ctxLine.contains("cd '/a' && export API_BASE_URL='http://127.0.0.1:8000/v1' "
+                            + "&& export Z_OTHER_URL='http://127.0.0.1:8000/v1' && clear && omp --model"),
            "启动上下文: env 导出排在 clear 前、args 排在命令后，且顺序确定")
 expectTrue(zshSyntaxOK(buildCommandScript(cmdLine: ctxLine, pathPrepend: [], autoCloseOnSuccess: false)),
            "启动上下文: 注入后的启动行放进脚本 zsh -n 通过")
@@ -1493,7 +1493,7 @@ let ctxJSON = """
   "dirs": ["/d"],
   "tools": [
     {"name": "omp代理", "cmd": "omp", "args": ["--model", "mistral/foo:max"],
-     "env": {"OPENAI_BASE_URL": "http://127.0.0.1:8000/v1"}},
+     "env": {"API_BASE_URL": "http://127.0.0.1:8000/v1"}},
     {"name": "老工具", "cmd": "opencode"}
   ]
 }
@@ -1502,17 +1502,25 @@ try? ctxJSON.write(toFile: ctxPath, atomically: true, encoding: .utf8)
 let lcCtx = loadConfig(path: ctxPath)
 expectEqual(lcCtx.tools.count, 2, "启动上下文: loadConfig 解析工具数")
 expectEqual(lcCtx.tools[0].args, ["--model", "mistral/foo:max"], "启动上下文: loadConfig 解析 args")
-expectEqual(lcCtx.tools[0].env["OPENAI_BASE_URL"], "http://127.0.0.1:8000/v1",
+expectEqual(lcCtx.tools[0].env["API_BASE_URL"], "http://127.0.0.1:8000/v1",
             "启动上下文: loadConfig 解析 env")
 expectEqual(lcCtx.tools[1].args, [], "启动上下文: 老工具 args 缺省为空")
 expectEqual(lcCtx.tools[1].env, [:], "启动上下文: 老工具 env 缺省为空")
 
-// —— defaultConfigJSON 的 omp 带可用示例 ——
+// —— defaultConfigJSON 的 omp：固定模型 + 本机 Clash 网络代理（0.5.9 修正）——
+// 实测钉死的事实：omp 二进制不读 OPENAI_BASE_URL/ANTHROPIC_BASE_URL（只有 PI_*/HTTP_PROXY/HTTPS_PROXY），
+// 本机 Clash mixed-port 在 7890（curl -x 返回 200）。默认必须走 HTTP_PROXY/HTTPS_PROXY，
+// 模型名保持 omp config.yml 的 default，与用户平时手跑 omp 一致。
 let ompEntry = (defaultObj["tools"] as? [[String: Any]] ?? []).first { ($0["cmd"] as? String) == "omp" }
 expectTrue(ompEntry?["args"] as? [String] == ["--model", "mistral/deepseek-v4-1-flash-1017:max"],
-           "启动上下文: 默认配置给 omp 配好 --model 参数")
-expectTrue(((ompEntry?["env"] as? [String: String])?["OPENAI_BASE_URL"] ?? "").hasPrefix("http://127.0.0.1:"),
-           "启动上下文: 默认配置给 omp 配好本地代理地址占位")
+           "启动上下文: 默认配置给 omp 配好 --model（与 omp config.yml 的 default 一致）")
+let ompEnvDefault = (ompEntry?["env"] as? [String: String]) ?? [:]
+expectEqual(ompEnvDefault["HTTP_PROXY"], "http://127.0.0.1:7890",
+            "启动上下文: 默认 omp 走本机 Clash HTTP 代理 7890")
+expectEqual(ompEnvDefault["HTTPS_PROXY"], "http://127.0.0.1:7890",
+            "启动上下文: 默认 omp HTTPS 也走本机 Clash 代理 7890")
+expectTrue(ompEnvDefault["OPENAI_BASE_URL"] == nil && ompEnvDefault["ANTHROPIC_BASE_URL"] == nil,
+           "启动上下文: 不再写对 omp 无效的 OPENAI_BASE_URL/ANTHROPIC_BASE_URL")
 expectTrue(!defaultStr.contains("sk-") && !defaultStr.contains("apiKey"),
            "启动上下文: 默认配置不含任何密钥/明文凭据")
 

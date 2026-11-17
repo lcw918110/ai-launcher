@@ -1095,13 +1095,14 @@ func defaultConfigJSON() -> [String: Any] {
         ],
         "tools": [
             ["name": "opencode", "cmd": "opencode"],
-            // 启动上下文示例：模型走 --model（omp 官方入口），代理走 OpenAI 兼容网关的环境变量。
-            // 地址是本机网关占位（omp 官方文档示例端口 8000），按你本地代理的实际端口改；
-            // 若你的代理是 HTTP/SOCKS 网络代理，把 env 的键换成 HTTP_PROXY / HTTPS_PROXY 即可。
+            // 启动上下文示例：模型走 --model（保持 omp config.yml 的 default，与手跑 omp 一致），
+            // 代理走本机 Clash 的 mixed-port 7890。实测 omp 不读 OPENAI_BASE_URL/ANTHROPIC_BASE_URL
+            // （二进制里只有 PI_*/HTTP_PROXY/HTTPS_PROXY），所以走标准网络代理变量而不是网关变量。
+            // 若你本机代理端口不同，改下面两个 URL 的端口即可；不用代理就把 env 整段删掉。
             ["name": "omp（Oh My Pi）", "cmd": "omp",
              "args": ["--model", "mistral/deepseek-v4-1-flash-1017:max"],
-             "env": ["OPENAI_BASE_URL": "http://127.0.0.1:8000/v1",
-                     "ANTHROPIC_BASE_URL": "http://127.0.0.1:8000/v1"]],
+             "env": ["HTTP_PROXY": "http://127.0.0.1:7890",
+                     "HTTPS_PROXY": "http://127.0.0.1:7890"]],
         ],
         "pathPrepend": defaultPathPrepend,
         "copy": [
